@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:get/get.dart';
@@ -26,18 +27,24 @@ class DashboardController extends GetxController {
   final isTraining = false.obs;
   final isInferencing = false.obs;
   final Rxn<InferenceResult> lastInference = Rxn<InferenceResult>();
+  final Rxn<Uint8List> liveFrame = Rxn<Uint8List>();
+  final liveEnabled = true.obs;
 
   Timer? _pollTimer;
+  Timer? _liveTimer;
+  bool _liveWarningShown = false;
 
   @override
   void onInit() {
     super.onInit();
     fetchDataset();
+    _startLiveStream();
   }
 
   @override
   void onClose() {
     _pollTimer?.cancel();
+    _liveTimer?.cancel();
     super.onClose();
   }
 
@@ -50,6 +57,48 @@ class DashboardController extends GetxController {
     } catch (error) {
       _addLog('Không lấy được dataset: $error',
           level: ActivityLogLevel.warning);
+    }
+  }
+
+  void toggleLiveStream(bool enabled) {
+    liveEnabled.value = enabled;
+    if (enabled) {
+      _startLiveStream();
+    } else {
+      _liveTimer?.cancel();
+    }
+  }
+
+  Future<void> refreshLiveFrame() async {
+    await _pullLiveFrame();
+  }
+
+  void _startLiveStream() {
+    _liveTimer?.cancel();
+    if (!liveEnabled.value) return;
+    _liveTimer = Timer.periodic(const Duration(milliseconds: 800), (_) async {
+      await _pullLiveFrame();
+    });
+  }
+
+  Future<void> _pullLiveFrame() async {
+    try {
+      final frame = await apiService.fetchLiveFrame();
+      if (frame != null) {
+        liveFrame.value = frame;
+        _liveWarningShown = false;
+      } else {
+        if (!_liveWarningShown) {
+          _addLog('Không nhận được frame từ stream',
+              level: ActivityLogLevel.warning);
+          _liveWarningShown = true;
+        }
+      }
+    } catch (error) {
+      if (!_liveWarningShown) {
+        _addLog('Stream lỗi: $error', level: ActivityLogLevel.error);
+        _liveWarningShown = true;
+      }
     }
   }
 

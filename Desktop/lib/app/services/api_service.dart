@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 
@@ -94,6 +95,23 @@ class ApiService {
         return null;
       }
       throw ApiException(_describe(error));
+    }
+  }
+
+  Future<Uint8List?> fetchLiveFrame() async {
+    try {
+      final response = await _dio.get<List<int>>(
+        '/api/stream/frame',
+        options: Options(responseType: ResponseType.bytes),
+      );
+      final bytes = response.data;
+      if (bytes == null) return null;
+      return Uint8List.fromList(bytes);
+    } on DioException catch (error) {
+      if (error.type == DioExceptionType.connectionError) {
+        return null;
+      }
+      return null;
     }
   }
 

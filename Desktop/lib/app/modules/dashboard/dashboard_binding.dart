@@ -6,7 +6,9 @@ import 'dashboard_controller.dart';
 class DashboardBinding extends Bindings {
   @override
   void dependencies() {
-    Get.lazyPut<ApiService>(() => ApiService());
+    if (!Get.isRegistered<ApiService>()) {
+      Get.lazyPut<ApiService>(() => ApiService());
+    }
     Get.put<DashboardController>(DashboardController(Get.find<ApiService>()));
   }
 }
