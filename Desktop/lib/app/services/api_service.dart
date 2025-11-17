@@ -53,9 +53,11 @@ class ApiService {
   Future<String?> startTraining({
     required int epochs,
     required double testSplit,
+    required String boardName,
   }) async {
     try {
       final response = await _dio.post('/api/train', data: {
+        'boardName': boardName,
         'epochs': epochs,
         'testSplit': testSplit,
       });
@@ -94,6 +96,11 @@ class ApiService {
       if (error.type == DioExceptionType.connectionError) {
         return null;
       }
+      // Lấy detail từ response nếu có
+      final detail = error.response?.data?['detail'] as String?;
+      if (detail != null) {
+        throw ApiException(detail);
+      }
       throw ApiException(_describe(error));
     }
   }
@@ -102,16 +109,43 @@ class ApiService {
     try {
       final response = await _dio.get<List<int>>(
         '/api/stream/frame',
-        options: Options(responseType: ResponseType.bytes),
+        options: Options(
+          responseType: ResponseType.bytes,
+          receiveTimeout: const Duration(milliseconds: 2000),
+          sendTimeout: const Duration(milliseconds: 2000),
+        ),
       );
       final bytes = response.data;
       if (bytes == null) return null;
       return Uint8List.fromList(bytes);
     } on DioException catch (error) {
-      if (error.type == DioExceptionType.connectionError) {
+      if (error.type == DioExceptionType.connectionError ||
+          error.type == DioExceptionType.receiveTimeout ||
+          error.type == DioExceptionType.sendTimeout) {
         return null;
       }
       return null;
+    }
+  }
+
+  /// Lấy URL của MJPEG stream (dùng cho WebView hoặc browser)
+  String getMJPEGStreamUrl() {
+    return '$baseUrl/api/stream/mjpeg';
+  }
+
+  Future<InferenceResult?> fetchLiveAnalysis() async {
+    try {
+      final response = await _dio.get<Map<String, dynamic>>('/api/stream/analyze');
+      final data = response.data;
+      if (data == null) return null;
+      return InferenceResult.fromJson(data);
+    } on DioException catch (error) {
+      if (error.response?.statusCode == 404 ||
+          error.response?.statusCode == 400 ||
+          error.type == DioExceptionType.connectionError) {
+        return null;
+      }
+      throw ApiException(_describe(error));
     }
   }
 

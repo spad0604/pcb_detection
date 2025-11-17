@@ -1,0 +1,14 @@
+{
+  "boardName": "LM2596",
+  "trainedAt": "2025-11-16T17:20:03.324634",
+  "numSamples": 3,
+  "templateSize": {
+    "width": 512,
+    "height": 512
+  },
+  "sourceImages": [
+    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/01f9a4fa_images (2).jpeg",
+    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/5b12a0b8_images (1).jpeg",
+    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/ba57935c_images.jpeg"
+  ]
+}

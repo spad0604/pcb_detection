@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../../models/activity_log_entry.dart';
@@ -27,16 +28,25 @@ class DashboardController extends GetxController {
   final isTraining = false.obs;
   final isInferencing = false.obs;
   final Rxn<InferenceResult> lastInference = Rxn<InferenceResult>();
+  final Rxn<InferenceResult> liveAnalysis = Rxn<InferenceResult>();
   final Rxn<Uint8List> liveFrame = Rxn<Uint8List>();
   final liveEnabled = true.obs;
+  final boardName = ''.obs;
+  late final TextEditingController boardNameController;
 
   Timer? _pollTimer;
   Timer? _liveTimer;
+  Timer? _analysisTimer;
   bool _liveWarningShown = false;
+  bool _liveAnalysisWarningShown = false;
 
   @override
   void onInit() {
     super.onInit();
+    boardNameController = TextEditingController();
+    boardNameController.addListener(() {
+      boardName.value = boardNameController.text;
+    });
     fetchDataset();
     _startLiveStream();
   }
@@ -45,6 +55,8 @@ class DashboardController extends GetxController {
   void onClose() {
     _pollTimer?.cancel();
     _liveTimer?.cancel();
+    _analysisTimer?.cancel();
+    boardNameController.dispose();
     super.onClose();
   }
 
@@ -66,18 +78,25 @@ class DashboardController extends GetxController {
       _startLiveStream();
     } else {
       _liveTimer?.cancel();
+      _analysisTimer?.cancel();
     }
   }
 
   Future<void> refreshLiveFrame() async {
     await _pullLiveFrame();
+    await _pullLiveAnalysis();
   }
 
   void _startLiveStream() {
     _liveTimer?.cancel();
+    _analysisTimer?.cancel();
     if (!liveEnabled.value) return;
-    _liveTimer = Timer.periodic(const Duration(milliseconds: 800), (_) async {
+    // Polling với interval 100ms (~10 FPS) để mượt hơn
+    _liveTimer = Timer.periodic(const Duration(milliseconds: 100), (_) async {
       await _pullLiveFrame();
+    });
+    _analysisTimer = Timer.periodic(const Duration(milliseconds: 600), (_) async {
+      await _pullLiveAnalysis();
     });
   }
 
@@ -98,6 +117,21 @@ class DashboardController extends GetxController {
       if (!_liveWarningShown) {
         _addLog('Stream lỗi: $error', level: ActivityLogLevel.error);
         _liveWarningShown = true;
+      }
+    }
+  }
+
+  Future<void> _pullLiveAnalysis() async {
+    try {
+      final result = await apiService.fetchLiveAnalysis();
+      if (result != null) {
+        liveAnalysis.value = result;
+        _liveAnalysisWarningShown = false;
+      }
+    } catch (error) {
+      if (!_liveAnalysisWarningShown) {
+        _addLog('Live analysis lỗi: $error', level: ActivityLogLevel.warning);
+        _liveAnalysisWarningShown = true;
       }
     }
   }
@@ -156,6 +190,11 @@ class DashboardController extends GetxController {
       _notify('Thiếu dữ liệu', 'Hãy upload vài ảnh trước nhé');
       return;
     }
+    final name = boardName.value.trim();
+    if (name.isEmpty) {
+      _notify('Thiếu tên PCB', 'Vui lòng nhập tên mạch PCB trước khi train');
+      return;
+    }
     isTraining.value = true;
     trainingStatus.value = TrainingJobStatus(
       state: TrainingState.running,
@@ -166,6 +205,7 @@ class DashboardController extends GetxController {
       final jobId = await apiService.startTraining(
         epochs: epochs.value,
         testSplit: testSplit.value,
+        boardName: name,
       );
       if (jobId == null) {
         _addLog('Backend offline? Không tạo được job train',
@@ -196,6 +236,9 @@ class DashboardController extends GetxController {
         if (status.state == TrainingState.succeeded) {
           _addLog('Train job $jobId hoàn tất',
               level: ActivityLogLevel.success);
+          dataset.clear();
+          await fetchDataset();
+          boardNameController.clear();
           _pollTimer?.cancel();
         } else if (status.state == TrainingState.failed) {
           _addLog('Train job $jobId bị lỗi', level: ActivityLogLevel.error);
@@ -224,6 +267,7 @@ class DashboardController extends GetxController {
       if (result == null) {
         _addLog('Backend chưa sẵn sàng để infer',
             level: ActivityLogLevel.warning);
+        _notify('Inference thất bại', 'Không nhận được kết quả từ server');
         return;
       }
       lastInference.value = result;
@@ -231,7 +275,18 @@ class DashboardController extends GetxController {
       _addLog('Kết quả inference: $verdict (conf ${result.confidence.toStringAsFixed(2)})',
           level: ActivityLogLevel.info);
     } catch (error) {
-      _addLog('Inference lỗi: $error', level: ActivityLogLevel.error);
+      final errorMsg = error.toString();
+      _addLog('Inference lỗi: $errorMsg', level: ActivityLogLevel.error);
+      
+      // Hiển thị thông báo rõ ràng nếu là lỗi model chưa train
+      if (errorMsg.contains('model') || errorMsg.contains('train')) {
+        _notify(
+          'Model chưa được train', 
+          'Vui lòng upload ảnh chuẩn và train template trước khi inference (tối thiểu 3 ảnh).'
+        );
+      } else {
+        _notify('Inference lỗi', errorMsg);
+      }
     } finally {
       isInferencing.value = false;
     }

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
+import '../../../models/inference_result.dart';
 import '../dashboard_controller.dart';
 
 class VideoStreamPanel extends StatelessWidget {
@@ -43,6 +44,57 @@ class VideoStreamPanel extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
+            Obx(() {
+              final analysis = controller.liveAnalysis.value;
+              final statusText = analysis == null
+                  ? 'Đang chờ template...'
+                  : analysis.isDefective
+                      ? 'Phát hiện sai lệch'
+                      : 'PCB ổn định';
+              final badgeColor =
+                  analysis == null ? Colors.grey : analysis.isDefective ? Colors.red : Colors.green;
+              final note = analysis?.notes;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: badgeColor.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          analysis?.isDefective == true
+                              ? Icons.error_rounded
+                              : Icons.check_circle_rounded,
+                          color: badgeColor,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          statusText,
+                          style: TextStyle(
+                            color: badgeColor,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (note != null) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      note,
+                      style: const TextStyle(color: Colors.black54),
+                    ),
+                  ],
+                ],
+              );
+            }),
+            const SizedBox(height: 12),
             ClipRRect(
               borderRadius: BorderRadius.circular(12),
               child: AspectRatio(
@@ -52,14 +104,11 @@ class VideoStreamPanel extends StatelessWidget {
                   if (!controller.liveEnabled.value) {
                     return _buildOverlay(context, 'Stream tạm dừng');
                   }
+                  final analysis = controller.liveAnalysis.value;
                   if (bytes == null) {
                     return _buildOverlay(context, 'Đang chờ camera...');
                   }
-                  return Image.memory(
-                    bytes,
-                    gaplessPlayback: true,
-                    fit: BoxFit.cover,
-                  );
+                  return _VideoCanvas(frame: bytes, analysis: analysis);
                 }),
               ),
             ),
@@ -80,6 +129,73 @@ class VideoStreamPanel extends StatelessWidget {
             .titleMedium
             ?.copyWith(color: Colors.black54),
       ),
+    );
+  }
+}
+
+class _VideoCanvas extends StatelessWidget {
+  const _VideoCanvas({required this.frame, this.analysis});
+
+  final Uint8List frame;
+  final InferenceResult? analysis;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final boxes = analysis?.missingAreas ?? [];
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            Image.memory(
+              frame,
+              gaplessPlayback: true,
+              fit: BoxFit.cover,
+            ),
+            for (final area in boxes)
+              if (area.bbox != null)
+                Positioned(
+                  left: area.bbox!.x * constraints.maxWidth,
+                  top: area.bbox!.y * constraints.maxHeight,
+                  width: area.bbox!.width * constraints.maxWidth,
+                  height: area.bbox!.height * constraints.maxHeight,
+                  child: IgnorePointer(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: Colors.redAccent.withOpacity(0.8),
+                          width: 2,
+                        ),
+                        borderRadius: BorderRadius.circular(6),
+                        color: Colors.redAccent.withOpacity(0.12),
+                      ),
+                      child: Align(
+                        alignment: Alignment.topLeft,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.redAccent,
+                            borderRadius: const BorderRadius.only(
+                              topLeft: Radius.circular(4),
+                              bottomRight: Radius.circular(6),
+                            ),
+                          ),
+                          child: Text(
+                            area.id,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+          ],
+        );
+      },
     );
   }
 }

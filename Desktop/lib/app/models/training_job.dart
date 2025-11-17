@@ -5,12 +5,14 @@ class TrainingJobStatus {
     required this.state,
     this.progress = 0,
     this.message,
+    this.boardName,
     this.metrics,
   });
 
   final TrainingState state;
   final double progress;
   final String? message;
+  final String? boardName;
   final Map<String, dynamic>? metrics;
 
   factory TrainingJobStatus.fromJson(Map<String, dynamic> json) =>
@@ -18,6 +20,7 @@ class TrainingJobStatus {
         state: _stateFrom(apiValue: json['status'] as String?),
         progress: (json['progress'] as num?)?.toDouble() ?? 0,
         message: json['message'] as String?,
+        boardName: json['boardName'] as String?,
         metrics: json['metrics'] as Map<String, dynamic>?,
       );
 
@@ -25,12 +28,14 @@ class TrainingJobStatus {
     TrainingState? state,
     double? progress,
     String? message,
+    String? boardName,
     Map<String, dynamic>? metrics,
   }) =>
       TrainingJobStatus(
         state: state ?? this.state,
         progress: progress ?? this.progress,
         message: message ?? this.message,
+        boardName: boardName ?? this.boardName,
         metrics: metrics ?? this.metrics,
       );
 

@@ -28,11 +28,22 @@ class TrainingPanel extends StatelessWidget {
                           TextStyle(fontSize: 20, fontWeight: FontWeight.w600)),
                   const Spacer(),
                   FilledButton.icon(
-                    onPressed: controller.startTraining,
+                    onPressed:
+                        isRunning ? null : controller.startTraining,
                     icon: const Icon(Icons.play_arrow_rounded),
                     label: const Text('Train ngay'),
                   ),
                 ],
+              ),
+              const SizedBox(height: 16),
+              const Text('Tên mạch PCB'),
+              const SizedBox(height: 6),
+              TextField(
+                controller: controller.boardNameController,
+                decoration: const InputDecoration(
+                  hintText: 'VD: PCB cảm biến nhiệt 01',
+                  border: OutlineInputBorder(),
+                ),
               ),
               const SizedBox(height: 16),
               Row(
@@ -65,6 +76,14 @@ class TrainingPanel extends StatelessWidget {
                 'Trạng thái: ${_statusLabel(status.state)}',
                 style: const TextStyle(fontWeight: FontWeight.w600),
               ),
+              if (status.boardName != null &&
+                  status.boardName!.trim().isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'PCB: ${status.boardName}',
+                  style: const TextStyle(color: Colors.black54),
+                ),
+              ],
               const SizedBox(height: 8),
               ClipRRect(
                 borderRadius: BorderRadius.circular(8),
