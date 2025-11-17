@@ -4,9 +4,11 @@ import asyncio
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
+import base64
+import json
 
 from .core.config import get_settings
 from .models.dto import TrainRequest
@@ -20,9 +22,25 @@ dataset_service = DatasetService(settings)
 training_service = TrainingService(settings, dataset_service)
 inference_service = InferenceService(settings)
 
-# Khởi tạo camera service (có thể thay đổi camera_index qua env var)
-camera_index = int(os.getenv("CAMERA_INDEX", "0"))
+# Khởi tạo camera service
+# Mặc định dùng camera index 4 (camera ngoài Brio 100)
+# Có thể override qua env var CAMERA_INDEX
+camera_index_env = os.getenv("CAMERA_INDEX")
+if camera_index_env is not None:
+  camera_index = int(camera_index_env)
+else:
+  # Mặc định camera index 4
+  camera_index = 4
 camera_service = CameraService(settings, camera_index=camera_index)
+
+# Khởi tạo camera ngay khi server khởi động
+import logging
+logger = logging.getLogger(__name__)
+logger.info("Đang khởi tạo camera...")
+if camera_service.initialize():
+  logger.info(f"Camera đã được khởi tạo thành công tại index {camera_service.camera_index}")
+else:
+  logger.warning(f"Không thể khởi tạo camera tại index {camera_service.camera_index}, sẽ thử lại khi có request")
 
 app = FastAPI(title="PCB Inspector API", version="0.1.0")
 app.add_middleware(
@@ -81,8 +99,8 @@ async def run_inference(file: UploadFile = File(...)) -> dict:
 
 @app.get("/api/stream/frame")
 async def get_stream_frame() -> Response:
-  """Trả về frame từ video stream - ưu tiên camera laptop, sau đó dataset, cuối cùng placeholder."""
-  # Ưu tiên 1: Lấy từ camera laptop
+  """Trả về frame từ video stream - ưu tiên camera ngoài, sau đó dataset, cuối cùng placeholder."""
+  # Ưu tiên 1: Lấy từ camera ngoài
   frame = camera_service.get_frame()
   if frame:
     return Response(content=frame, media_type="image/jpeg")
@@ -99,7 +117,7 @@ async def get_stream_frame() -> Response:
 
 @app.get("/api/stream/mjpeg")
 async def get_mjpeg_stream(request: Request) -> StreamingResponse:
-  """MJPEG stream endpoint - stream video mượt hơn từ camera laptop."""
+  """MJPEG stream endpoint - stream video mượt hơn từ camera ngoài."""
   async def generate_frames():
     try:
       while True:
@@ -153,3 +171,47 @@ async def analyze_stream_frame() -> dict:
 
   analysis = await inference_service.analyze_bytes(frame)
   return analysis.dict()
+
+
+@app.websocket("/api/stream/ws")
+async def websocket_stream(websocket: WebSocket):
+  """WebSocket endpoint để stream video realtime - giảm độ trễ so với HTTP polling."""
+  await websocket.accept()
+  try:
+    while True:
+      # Lấy frame từ camera
+      frame = await asyncio.to_thread(camera_service.get_frame)
+      
+      if not frame:
+        # Thử dataset nếu không có camera
+        frame = await asyncio.to_thread(
+          camera_service.get_frame_from_dataset,
+          dataset_service=dataset_service
+        )
+      
+      if not frame:
+        # Fallback placeholder
+        frame = await asyncio.to_thread(camera_service.get_placeholder_frame)
+      
+      # Gửi frame dưới dạng base64 JSON
+      frame_base64 = base64.b64encode(frame).decode('utf-8')
+      message = json.dumps({
+        "type": "frame",
+        "data": frame_base64,
+        "timestamp": asyncio.get_event_loop().time()
+      })
+      
+      await websocket.send_text(message)
+      
+      # Delay để giới hạn FPS (~30 FPS)
+      await asyncio.sleep(1/30)
+      
+  except WebSocketDisconnect:
+    # Client disconnect bình thường
+    pass
+  except Exception as e:
+    # Lỗi khác, đóng connection
+    try:
+      await websocket.close()
+    except Exception:
+      pass

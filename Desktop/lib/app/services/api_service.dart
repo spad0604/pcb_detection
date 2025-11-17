@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/dataset_sample.dart';
 import '../models/inference_result.dart';
@@ -153,6 +155,17 @@ class ApiService {
     final status = error.response?.statusCode;
     final detail = error.response?.data;
     return 'API error (status: $status) -> $detail';
+  }
+
+  /// Tạo WebSocket connection cho video stream
+  WebSocketChannel? createVideoStreamChannel() {
+    try {
+      final wsUrl = baseUrl.replaceFirst('http://', 'ws://').replaceFirst('https://', 'wss://');
+      final channel = WebSocketChannel.connect(Uri.parse('$wsUrl/api/stream/ws'));
+      return channel;
+    } catch (e) {
+      return null;
+    }
   }
 }
 

@@ -9,11 +9,10 @@ from typing import Dict, Optional
 from uuid import uuid4
 
 import numpy as np
-from PIL import Image
-
 from ..core.config import Settings
 from ..models.dto import TrainRequest, TrainingJob
 from .dataset_service import DatasetService
+from ..utils.image_processing import preprocess_image_from_path
 
 
 class TrainingService:
@@ -120,11 +119,4 @@ class TrainingService:
       self._jobs[job_id] = updated
 
   def _load_image(self, path: Path) -> np.ndarray | None:
-    try:
-      with Image.open(path) as img:
-        img = img.convert("L")
-        img = img.resize(self.TEMPLATE_SIZE, Image.BILINEAR)
-        arr = np.asarray(img, dtype=np.float32) / 255.0
-        return arr
-    except Exception:
-      return None
+    return preprocess_image_from_path(path, self.TEMPLATE_SIZE)

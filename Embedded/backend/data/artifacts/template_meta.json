@@ -1,14 +1,18 @@
 {
-  "boardName": "LM2596",
-  "trainedAt": "2025-11-16T17:20:03.324634",
-  "numSamples": 3,
+  "boardName": "Sieu am",
+  "trainedAt": "2025-11-17T17:34:03.711956",
+  "numSamples": 7,
   "templateSize": {
     "width": 512,
     "height": 512
   },
   "sourceImages": [
-    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/01f9a4fa_images (2).jpeg",
-    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/5b12a0b8_images (1).jpeg",
-    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/ba57935c_images.jpeg"
+    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/29c33ae9_43cfe109-52b0-47bd-a3e6-52b0f59cd81b.jpeg",
+    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/1061f34a_43cfe109-52b0-47bd-a3e6-52b0f59cd81b.jpeg",
+    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/ff1e7708_7c3ec67e-4623-4d06-b34d-8702e9b2c1c8.jpeg",
+    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/458f8bfd_c2d16783-1ec8-47ec-be28-65298f0f3f66.jpeg",
+    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/aa9c6cb2_b53008ab-d4df-451d-ba15-907edb84cf51.jpeg",
+    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/223d8086_3948104f-f4a2-43ad-93be-892f125a18f9.jpeg",
+    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/33dcf024_4cebe8a5-257e-46d1-98e2-7f84d0584dc0.jpeg"
   ]
 }

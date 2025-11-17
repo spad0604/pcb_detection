@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../models/activity_log_entry.dart';
 import '../../models/dataset_sample.dart';
@@ -37,6 +39,8 @@ class DashboardController extends GetxController {
   Timer? _pollTimer;
   Timer? _liveTimer;
   Timer? _analysisTimer;
+  WebSocketChannel? _wsChannel;
+  StreamSubscription? _wsSubscription;
   bool _liveWarningShown = false;
   bool _liveAnalysisWarningShown = false;
 
@@ -48,7 +52,7 @@ class DashboardController extends GetxController {
       boardName.value = boardNameController.text;
     });
     fetchDataset();
-    _startLiveStream();
+    _startWebSocketStream();
   }
 
   @override
@@ -56,6 +60,8 @@ class DashboardController extends GetxController {
     _pollTimer?.cancel();
     _liveTimer?.cancel();
     _analysisTimer?.cancel();
+    _wsSubscription?.cancel();
+    _wsChannel?.sink.close();
     boardNameController.dispose();
     super.onClose();
   }
@@ -75,28 +81,99 @@ class DashboardController extends GetxController {
   void toggleLiveStream(bool enabled) {
     liveEnabled.value = enabled;
     if (enabled) {
-      _startLiveStream();
+      _startWebSocketStream();
     } else {
-      _liveTimer?.cancel();
+      _stopWebSocketStream();
       _analysisTimer?.cancel();
     }
   }
 
   Future<void> refreshLiveFrame() async {
+    // Vẫn giữ HTTP fallback cho refresh thủ công
     await _pullLiveFrame();
     await _pullLiveAnalysis();
   }
 
-  void _startLiveStream() {
-    _liveTimer?.cancel();
-    _analysisTimer?.cancel();
+  void _startWebSocketStream() {
+    _stopWebSocketStream();
     if (!liveEnabled.value) return;
-    // Polling với interval 100ms (~10 FPS) để mượt hơn
-    _liveTimer = Timer.periodic(const Duration(milliseconds: 100), (_) async {
-      await _pullLiveFrame();
-    });
+    
+    try {
+      _wsChannel = apiService.createVideoStreamChannel();
+      if (_wsChannel == null) {
+        _addLog('Không thể kết nối WebSocket, fallback về HTTP polling',
+            level: ActivityLogLevel.warning);
+        _startHttpPollingFallback();
+        return;
+      }
+
+      _wsSubscription = _wsChannel!.stream.listen(
+        (message) {
+          try {
+            final data = json.decode(message as String) as Map<String, dynamic>;
+            if (data['type'] == 'frame' && data['data'] != null) {
+              final frameBase64 = data['data'] as String;
+              final frameBytes = base64Decode(frameBase64);
+              liveFrame.value = Uint8List.fromList(frameBytes);
+              _liveWarningShown = false;
+            }
+          } catch (e) {
+            if (!_liveWarningShown) {
+              _addLog('Lỗi decode WebSocket frame: $e',
+                  level: ActivityLogLevel.warning);
+              _liveWarningShown = true;
+            }
+          }
+        },
+        onError: (error) {
+          if (!_liveWarningShown) {
+            _addLog('WebSocket lỗi: $error, fallback về HTTP polling',
+                level: ActivityLogLevel.warning);
+            _liveWarningShown = true;
+          }
+          _stopWebSocketStream();
+          _startHttpPollingFallback();
+        },
+        onDone: () {
+          if (liveEnabled.value) {
+            _addLog('WebSocket đóng, đang thử kết nối lại...',
+                level: ActivityLogLevel.warning);
+            _stopWebSocketStream();
+            Future.delayed(const Duration(seconds: 2), () {
+              if (liveEnabled.value) {
+                _startWebSocketStream();
+              }
+            });
+          }
+        },
+      );
+
+      _addLog('Đã kết nối WebSocket stream', level: ActivityLogLevel.success);
+    } catch (e) {
+      _addLog('Lỗi khởi tạo WebSocket: $e, fallback về HTTP polling',
+          level: ActivityLogLevel.warning);
+      _startHttpPollingFallback();
+    }
+
+    // Vẫn giữ analysis polling riêng
+    _analysisTimer?.cancel();
     _analysisTimer = Timer.periodic(const Duration(milliseconds: 600), (_) async {
       await _pullLiveAnalysis();
+    });
+  }
+
+  void _stopWebSocketStream() {
+    _wsSubscription?.cancel();
+    _wsSubscription = null;
+    _wsChannel?.sink.close();
+    _wsChannel = null;
+    _liveTimer?.cancel();
+  }
+
+  void _startHttpPollingFallback() {
+    _liveTimer?.cancel();
+    _liveTimer = Timer.periodic(const Duration(milliseconds: 100), (_) async {
+      await _pullLiveFrame();
     });
   }
 

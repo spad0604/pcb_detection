@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import io
 import tempfile
 from datetime import datetime
 import json
@@ -10,10 +8,12 @@ from typing import Dict, List
 import cv2
 import numpy as np
 from fastapi import HTTPException, UploadFile
-from PIL import Image
-
 from ..core.config import Settings
 from ..models.dto import BoundingBox, InferenceResponse, MissingArea
+from ..utils.image_processing import (
+  preprocess_image_from_bytes,
+  preprocess_image_from_path,
+)
 
 
 class InferenceService:
@@ -71,22 +71,10 @@ class InferenceService:
     }
 
   def _load_image(self, path: Path, size: tuple[int, int]) -> np.ndarray | None:
-    try:
-      with Image.open(path) as img:
-        img = img.convert("L")
-        img = img.resize(size, Image.BILINEAR)
-        return np.asarray(img, dtype=np.float32) / 255.0
-    except Exception:
-      return None
+    return preprocess_image_from_path(path, size)
 
   def _load_image_from_bytes(self, data: bytes, size: tuple[int, int]) -> np.ndarray | None:
-    try:
-      with Image.open(io.BytesIO(data)) as img:
-        img = img.convert("L")
-        img = img.resize(size, Image.BILINEAR)
-        return np.asarray(img, dtype=np.float32) / 255.0
-    except Exception:
-      return None
+    return preprocess_image_from_bytes(data, size)
 
   def _evaluate(self, candidate: np.ndarray, template: Dict) -> InferenceResponse:
     compare_result = self._compare(candidate, template["mean"], template["std"])

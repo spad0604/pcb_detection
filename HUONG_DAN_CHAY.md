@@ -36,7 +36,7 @@ venv\Scripts\activate  # Trên Windows
 pip install -r requirements.txt
 ```
 
-**Lưu ý:** Package `opencv-python` sẽ được cài đặt để hỗ trợ stream từ camera laptop. Nếu có vấn đề với camera, hệ thống sẽ tự động fallback về dataset hoặc placeholder.
+**Lưu ý:** Package `opencv-python` sẽ được cài đặt để hỗ trợ stream từ camera ngoài. Nếu có vấn đề với camera, hệ thống sẽ tự động fallback về dataset hoặc placeholder.
 
 4. **Chạy server:**
 ```bash
@@ -135,7 +135,7 @@ pcb_detection/
 - `POST /api/train` - Bắt đầu training (tham số: `boardName`, `epochs`, `testSplit`)
 - `GET /api/train/{job_id}` - Lấy trạng thái training job
 - `POST /api/inference` - Phân loại PCB dựa trên chênh lệch so với template
-- `GET /api/stream/frame` - Lấy frame đơn lẻ từ video stream (ưu tiên: camera laptop → dataset → placeholder)
+- `GET /api/stream/frame` - Lấy frame đơn lẻ từ video stream (ưu tiên: camera ngoài → dataset → placeholder)
 - `GET /api/stream/mjpeg` - MJPEG stream endpoint - stream video mượt hơn, liên tục (phù hợp cho browser/WebView)
 - `GET /api/stream/analyze` - Trả về kết quả phân tích realtime (JSON) cho frame camera mới nhất
 
@@ -145,7 +145,7 @@ pcb_detection/
 - Cần ít nhất 3 ảnh chuẩn trong dataset để bắt đầu training (chỉ cần ảnh “đủ linh kiện”)
 - Các file ảnh được lưu trong thư mục `data/` (tự động tạo). Sau mỗi lần train thành công, dataset sẽ được tự động xóa để đảm bảo mỗi lần train chỉ dành cho một mạch PCB.
 - Video stream sẽ tự động:
-  1. **Ưu tiên 1**: Stream từ camera laptop (nếu có)
+  1. **Ưu tiên 1**: Stream từ camera ngoài (nếu có)
   2. **Ưu tiên 2**: Hiển thị ảnh mới nhất từ dataset
   3. **Fallback**: Hiển thị placeholder nếu không có camera và dataset
 
@@ -153,7 +153,9 @@ pcb_detection/
   - `/api/stream/frame`: Lấy frame đơn lẻ (dùng cho polling) - Flutter app đang dùng với interval 100ms (~10 FPS)
   - `/api/stream/mjpeg`: MJPEG stream liên tục (~30 FPS) - phù hợp cho browser, WebView, hoặc các client hỗ trợ MJPEG
   
-- Để thay đổi camera (nếu có nhiều camera), set environment variable: `CAMERA_INDEX=1` (mặc định là 0)
+- Để thay đổi camera (nếu có nhiều camera), set environment variable: `CAMERA_INDEX=0` (camera laptop) hoặc `CAMERA_INDEX=1` (camera ngoài - mặc định)
+- Hệ thống sẽ tự động bỏ qua các camera hồng ngoại (IR) dựa trên tên thiết bị, chỉ chọn camera ngoài thường để stream
+- **Phông nền**: Mặc định hệ thống xử lý ảnh với giả định nền băng tải màu xanh dương và tự động loại bỏ nền để nổi bật linh kiện. Khi training/inference nên đặt PCB trên băng tải xanh để kết quả ổn định nhất.
 
 - **Lưu ý về lỗi upload dataset**: Đã sửa lỗi datetime serialization. Nếu gặp lỗi khi upload ảnh, đảm bảo backend đã được restart sau khi cập nhật code.
 
