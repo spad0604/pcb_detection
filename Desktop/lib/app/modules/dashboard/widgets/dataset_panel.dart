@@ -112,17 +112,25 @@ class DatasetPanel extends StatelessWidget {
                     color: Colors.red,
                   ),
                 ];
-                return Flex(
-                  direction: vertical ? Axis.vertical : Axis.horizontal,
+                if (vertical) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: cards
+                        .map((c) => Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: c,
+                            ))
+                        .toList(),
+                  );
+                }
+                
+                return Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: cards
                       .map((c) => Expanded(
                             child: Padding(
-                              padding: EdgeInsets.only(
-                                right: vertical ? 0 : 12,
-                                bottom: vertical ? 12 : 0,
-                              ),
+                              padding: const EdgeInsets.only(right: 12),
                               child: c,
                             ),
                           ))

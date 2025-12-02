@@ -87,50 +87,87 @@ class CameraService:
       logger.info(f"Đang mở camera tại index {self._camera_index}...")
       self._cap = cv2.VideoCapture(self._camera_index)
       if self._cap.isOpened():
-        # Set resolution
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        # Set resolution cao hơn để có hình ảnh rõ hơn ở khoảng cách gần
+        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
         
-        # Bật autofocus (tự động lấy nét)
+        # Tăng FPS nếu camera hỗ trợ
+        self._cap.set(cv2.CAP_PROP_FPS, 30)
+        
+        logger.info(f"Đã set resolution 1920x1080 @ 30fps")
+        
+        # Cấu hình focus cho khoảng cách ngắn (30cm)
         try:
-          # Thử nhiều cách để bật autofocus
-          autofocus_success = False
+          import subprocess
+          device_path = f"/dev/video{self._camera_index}"
+          focus_configured = False
           
-          # Cách 1: CAP_PROP_AUTOFOCUS = 39
-          if self._cap.set(cv2.CAP_PROP_AUTOFOCUS, 1):
-            autofocus_success = True
-            logger.info("Đã bật autofocus qua CAP_PROP_AUTOFOCUS")
+          # Tắt autofocus để có thể set manual focus distance
+          try:
+            result = subprocess.run(
+              ["v4l2-ctl", "-d", device_path, "-c", "focus_auto=0"],
+              capture_output=True,
+              text=True,
+              timeout=2
+            )
+            if result.returncode == 0:
+              logger.info("Đã tắt autofocus, sẵn sàng set manual focus")
+              
+              # Set focus distance cho khoảng cách ngắn (30cm)
+              # Giá trị focus thường từ 0-255, với giá trị thấp = gần, cao = xa
+              # Thử các giá trị: 0, 10, 20, 30 cho khoảng cách 30cm
+              focus_values = [0, 10, 20, 30, 40, 50]
+              
+              for focus_val in focus_values:
+                result = subprocess.run(
+                  ["v4l2-ctl", "-d", device_path, "-c", f"focus_absolute={focus_val}"],
+                  capture_output=True,
+                  text=True,
+                  timeout=2
+                )
+                if result.returncode == 0:
+                  logger.info(f"✓ Đã set focus_absolute={focus_val} (khoảng cách ngắn ~30cm)")
+                  focus_configured = True
+                  break
+              
+              # Nếu không set được focus_absolute, thử lại với autofocus ở chế độ macro
+              if not focus_configured:
+                # Thử bật lại autofocus với range gần
+                subprocess.run(
+                  ["v4l2-ctl", "-d", device_path, "-c", "focus_auto=1"],
+                  capture_output=True,
+                  timeout=2
+                )
+                logger.info("Đã bật lại autofocus (fallback)")
+                focus_configured = True
           
-          # Cách 2: CAP_PROP_FOCUS = 28, set = 0 để auto
-          if self._cap.set(cv2.CAP_PROP_FOCUS, 0):
-            autofocus_success = True
-            logger.info("Đã set focus mode = auto qua CAP_PROP_FOCUS")
+          except FileNotFoundError:
+            logger.warning("v4l2-ctl không có sẵn, không thể điều chỉnh focus distance")
+          except Exception as e:
+            logger.warning(f"Lỗi khi set manual focus: {e}")
           
-          # Cách 3: Dùng v4l2-ctl nếu có (cho USB camera như Brio 100)
-          if not autofocus_success:
+          # Fallback: Thử với OpenCV API
+          if not focus_configured:
             try:
-              import subprocess
-              # Tìm device path từ camera index
-              device_path = f"/dev/video{self._camera_index}"
-              # Bật autofocus qua v4l2-ctl
-              result = subprocess.run(
-                ["v4l2-ctl", "-d", device_path, "-c", "focus_auto=1"],
-                capture_output=True,
-                text=True,
-                timeout=2
-              )
-              if result.returncode == 0:
-                logger.info("Đã bật autofocus qua v4l2-ctl")
-                autofocus_success = True
-            except FileNotFoundError:
-              logger.debug("v4l2-ctl không có sẵn, bỏ qua")
+              # Tắt autofocus
+              self._cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+              # Set focus cho khoảng cách ngắn (0-255, giá trị thấp = gần)
+              focus_set = self._cap.set(cv2.CAP_PROP_FOCUS, 30)
+              if focus_set:
+                logger.info("Đã set focus distance qua OpenCV (giá trị 30 cho ~30cm)")
+                focus_configured = True
+              else:
+                # Nếu không được, bật lại autofocus
+                self._cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+                logger.info("Manual focus không hỗ trợ, bật lại autofocus")
             except Exception as e:
-              logger.debug(f"Không thể dùng v4l2-ctl: {e}")
+              logger.warning(f"Lỗi khi set focus qua OpenCV: {e}")
           
-          if not autofocus_success:
-            logger.warning("Không thể bật autofocus (có thể camera không hỗ trợ hoặc cần cấu hình thủ công)")
+          if not focus_configured:
+            logger.warning("Không thể cấu hình focus distance, camera sẽ dùng chế độ mặc định")
+        
         except Exception as e:
-          logger.warning(f"Lỗi khi cấu hình autofocus: {e}")
+          logger.warning(f"Lỗi tổng quát khi cấu hình focus: {e}")
         
         # Thử đọc một frame để đảm bảo camera hoạt động
         ret, _ = self._cap.read()

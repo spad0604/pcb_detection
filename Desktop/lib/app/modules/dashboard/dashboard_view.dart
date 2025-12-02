@@ -5,6 +5,7 @@ import '../../models/training_job.dart';
 import 'dashboard_controller.dart';
 import 'widgets/activity_log_panel.dart';
 import 'widgets/dataset_panel.dart';
+import 'widgets/inference_panel.dart';
 import 'widgets/training_panel.dart';
 import 'widgets/video_stream_panel.dart';
 
@@ -40,6 +41,8 @@ class DashboardView extends GetView<DashboardController> {
                       const SizedBox(height: 16),
                       TrainingPanel(controller: controller),
                       const SizedBox(height: 16),
+                      InferencePanel(controller: controller),
+                      const SizedBox(height: 16),
                       VideoStreamPanel(controller: controller),
                       const SizedBox(height: 16),
                       ActivityLogPanel(controller: controller),
@@ -59,6 +62,8 @@ class DashboardView extends GetView<DashboardController> {
                               DatasetPanel(controller: controller),
                               const SizedBox(height: 16),
                               TrainingPanel(controller: controller),
+                              const SizedBox(height: 16),
+                              InferencePanel(controller: controller),
                             ],
                           ),
                         ),

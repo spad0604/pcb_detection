@@ -1,18 +1,16 @@
 {
-  "boardName": "Sieu am",
-  "trainedAt": "2025-11-17T17:34:03.711956",
-  "numSamples": 7,
+  "boardName": "ESP32",
+  "trainedAt": "2025-12-02T15:36:47.015063",
+  "numSamples": 5,
   "templateSize": {
     "width": 512,
     "height": 512
   },
   "sourceImages": [
-    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/29c33ae9_43cfe109-52b0-47bd-a3e6-52b0f59cd81b.jpeg",
-    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/1061f34a_43cfe109-52b0-47bd-a3e6-52b0f59cd81b.jpeg",
-    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/ff1e7708_7c3ec67e-4623-4d06-b34d-8702e9b2c1c8.jpeg",
-    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/458f8bfd_c2d16783-1ec8-47ec-be28-65298f0f3f66.jpeg",
-    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/aa9c6cb2_b53008ab-d4df-451d-ba15-907edb84cf51.jpeg",
-    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/223d8086_3948104f-f4a2-43ad-93be-892f125a18f9.jpeg",
-    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/ok/33dcf024_4cebe8a5-257e-46d1-98e2-7f84d0584dc0.jpeg"
+    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/missing/c2c90f01_PXL_20251202_144245213.MP.jpg",
+    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/missing/86d05d8f_PXL_20251202_144239153.MP.jpg",
+    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/missing/2fc03a17_PXL_20251202_144233472.MP.jpg",
+    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/missing/ae98201e_PXL_20251202_144241871.MP.jpg",
+    "/home/nguyen-giap/pcb_detection/Embedded/backend/data/dataset/missing/b73a7a76_PXL_20251202_144231256.MP.jpg"
   ]
 }

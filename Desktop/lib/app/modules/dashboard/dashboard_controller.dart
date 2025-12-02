@@ -32,6 +32,7 @@ class DashboardController extends GetxController {
   final Rxn<InferenceResult> lastInference = Rxn<InferenceResult>();
   final Rxn<InferenceResult> liveAnalysis = Rxn<InferenceResult>();
   final Rxn<Uint8List> liveFrame = Rxn<Uint8List>();
+  final RxnString lastInferenceImagePath = RxnString();
   final liveEnabled = true.obs;
   final boardName = ''.obs;
   late final TextEditingController boardNameController;
@@ -214,43 +215,117 @@ class DashboardController extends GetxController {
   }
 
   Future<void> addSamples() async {
-    final pickResult = await FilePicker.platform.pickFiles(
-      allowMultiple: true,
-      type: FileType.image,
-      withData: false,
-    );
-    if (pickResult == null) return;
-
-    isUploading.value = true;
-    final label = activeLabel.value;
-
     try {
+      _addLog('🔵 Bắt đầu mở file picker...', level: ActivityLogLevel.info);
+      
+      FilePickerResult? pickResult;
+      
+      try {
+        // Thử mở file picker với config đơn giản nhất
+        _addLog('⏳ Đang mở dialog chọn file. Nếu không thấy dialog, check Alt+Tab!', 
+            level: ActivityLogLevel.info);
+        
+        pickResult = await FilePicker.platform.pickFiles(
+          dialogTitle: 'Chọn ảnh PCB để upload',
+          allowMultiple: true,
+          type: FileType.custom,
+          allowedExtensions: ['jpg', 'jpeg', 'png', 'bmp', 'gif', 'JPG', 'JPEG', 'PNG'],
+          withData: false,
+          lockParentWindow: false,  // Thử false để dialog không bị lock
+        );
+        
+        _addLog('✅ Dialog file picker đã đóng, đang xử lý kết quả...', 
+            level: ActivityLogLevel.info);
+      } catch (pickerError) {
+        _addLog('❌ Lỗi khi gọi file picker: $pickerError', 
+            level: ActivityLogLevel.error);
+        _notify('Lỗi file picker', 
+            'Không thể mở dialog chọn file. Thử: 1) Restart app, 2) Kiểm tra quyền truy cập file system');
+        return;
+      }
+      
+      if (pickResult == null) {
+        _addLog('⚠️ File picker trả về null. Lý do có thể:\n'
+            '  • Bạn đã đóng dialog mà chưa chọn file\n'
+            '  • Dialog không hiển thị (check Alt+Tab)\n'
+            '  • Zenity bị lỗi (thử: zenity --version)', 
+            level: ActivityLogLevel.warning);
+        return;
+      }
+      
+      _addLog('✅ File picker thành công, đã nhận result', 
+          level: ActivityLogLevel.success);
+
+      if (pickResult.files.isEmpty) {
+        _addLog('Không có file nào được chọn', level: ActivityLogLevel.warning);
+        return;
+      }
+
+      isUploading.value = true;
+      final label = activeLabel.value;
+      _addLog('Đang upload ${pickResult.files.length} ảnh với nhãn "$label"...', 
+          level: ActivityLogLevel.info);
+
+      int successCount = 0;
+      int errorCount = 0;
+
       for (final file in pickResult.files) {
         final path = file.path;
-        if (path == null) continue;
-        final sample = DatasetSample(
-          id: DateTime.now().millisecondsSinceEpoch.toString(),
-          name: file.name,
-          label: label,
-          sizeBytes: file.size,
-          createdAt: DateTime.now(),
-          localPath: path,
-        );
-        dataset.add(sample);
-        final uploaded = await apiService.uploadSample(
-          file: File(path),
-          label: label,
-        );
-        if (uploaded != null) {
-          dataset.remove(sample);
-          dataset.add(uploaded);
+        if (path == null) {
+          _addLog('Bỏ qua file ${file.name}: không có đường dẫn',
+              level: ActivityLogLevel.warning);
+          errorCount++;
+          continue;
+        }
+
+        try {
+          final sample = DatasetSample(
+            id: DateTime.now().millisecondsSinceEpoch.toString(),
+            name: file.name,
+            label: label,
+            sizeBytes: file.size,
+            createdAt: DateTime.now(),
+            localPath: path,
+          );
+          dataset.add(sample);
+          
+          _addLog('Đang upload ${file.name}...', level: ActivityLogLevel.info);
+          final uploaded = await apiService.uploadSample(
+            file: File(path),
+            label: label,
+          );
+          
+          if (uploaded != null) {
+            dataset.remove(sample);
+            dataset.add(uploaded);
+            successCount++;
+            _addLog('✓ Upload thành công: ${file.name}',
+                level: ActivityLogLevel.success);
+          } else {
+            errorCount++;
+            _addLog('✗ Upload thất bại: ${file.name}',
+                level: ActivityLogLevel.error);
+          }
+        } catch (fileError) {
+          errorCount++;
+          _addLog('✗ Lỗi upload ${file.name}: $fileError',
+              level: ActivityLogLevel.error);
         }
       }
-      _addLog('Upload ${pickResult.count} ảnh nhãn "$label"',
-          level: ActivityLogLevel.success);
-    } catch (error) {
-      _addLog('Upload lỗi: $error', level: ActivityLogLevel.error);
-      rethrow;
+
+      if (successCount > 0) {
+        _addLog('Hoàn tất: $successCount ảnh thành công, $errorCount lỗi',
+            level: ActivityLogLevel.success);
+        _notify('Upload thành công', 'Đã upload $successCount ảnh');
+      } else {
+        _addLog('Upload thất bại: tất cả ${errorCount} ảnh đều lỗi',
+            level: ActivityLogLevel.error);
+        _notify('Upload thất bại', 'Không thể upload ảnh nào. Kiểm tra backend hoặc kết nối mạng.');
+      }
+    } catch (error, stackTrace) {
+      _addLog('Lỗi nghiêm trọng khi upload: $error', level: ActivityLogLevel.error);
+      _notify('Lỗi upload', 'Có lỗi xảy ra: $error');
+      print('Upload error stack trace: $stackTrace');
     } finally {
       isUploading.value = false;
     }
@@ -264,11 +339,13 @@ class DashboardController extends GetxController {
 
   Future<void> startTraining() async {
     if (dataset.isEmpty) {
+      _addLog('Không thể train: chưa có dữ liệu', level: ActivityLogLevel.warning);
       _notify('Thiếu dữ liệu', 'Hãy upload vài ảnh trước nhé');
       return;
     }
     final name = boardName.value.trim();
     if (name.isEmpty) {
+      _addLog('Không thể train: chưa nhập tên PCB', level: ActivityLogLevel.warning);
       _notify('Thiếu tên PCB', 'Vui lòng nhập tên mạch PCB trước khi train');
       return;
     }
@@ -348,6 +425,7 @@ class DashboardController extends GetxController {
         return;
       }
       lastInference.value = result;
+      lastInferenceImagePath.value = path; // Lưu đường dẫn ảnh
       final verdict = result.isDefective ? 'LỖI' : 'OK';
       _addLog('Kết quả inference: $verdict (conf ${result.confidence.toStringAsFixed(2)})',
           level: ActivityLogLevel.info);
@@ -377,6 +455,22 @@ class DashboardController extends GetxController {
   }
 
   void _notify(String title, String message) {
-    Get.snackbar(title, message, snackPosition: SnackPosition.BOTTOM);
+    try {
+      // Kiểm tra xem có overlay context không
+      if (Get.overlayContext != null) {
+        Get.snackbar(
+          title, 
+          message, 
+          snackPosition: SnackPosition.BOTTOM,
+          duration: const Duration(seconds: 3),
+        );
+      } else {
+        // Fallback: chỉ log nếu chưa có overlay
+        _addLog('$title: $message', level: ActivityLogLevel.info);
+      }
+    } catch (e) {
+      // Nếu có lỗi, chỉ log
+      _addLog('$title: $message', level: ActivityLogLevel.info);
+    }
   }
 }
