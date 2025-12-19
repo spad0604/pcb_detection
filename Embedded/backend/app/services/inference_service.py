@@ -1,135 +1,262 @@
 from __future__ import annotations
-import tempfile
-from datetime import datetime
 import json
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import List, Optional, Tuple, Dict
 
 import cv2
 import numpy as np
-from fastapi import HTTPException, UploadFile
-from ..core.config import Settings
-from ..models.dto import BoundingBox, InferenceResponse, MissingArea
-from ..utils.image_processing import (
-  preprocess_image_from_bytes,
-  preprocess_image_from_path,
-)
+from fastapi import UploadFile
+from ultralytics import YOLO
 
+from ..core.config import Settings
+from ..models.dto import BoundingBox, InferenceResponse, MissingArea, BoardProfile
 
 class InferenceService:
-  def __init__(self, settings: Settings) -> None:
-    self._settings = settings
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        
+        # Load Model YOLO
+        self.model_path = settings.artifacts_dir / "best.pt"
+        if not self.model_path.exists():
+             self.model = YOLO("yolov8n.pt") 
+        else:
+             self.model = YOLO(str(self.model_path))
+             
+        # Cache profile & SIFT data
+        self._current_profile: Optional[BoardProfile] = None
+        self._ref_image_cache: Optional[np.ndarray] = None
+        
+        self._sift = cv2.SIFT_create()
+        self._ref_kp = None  # Keypoints của ảnh gốc
+        self._ref_des = None # Descriptors của ảnh gốc
 
-  async def run(self, upload: UploadFile) -> InferenceResponse:
-    contents = await upload.read()
-    if not contents:
-      raise HTTPException(status_code=400, detail="File rỗng")
+    def _create_pcb_mask(self, img: np.ndarray) -> np.ndarray:
+        """Tạo mask lọc nền (Chỉ giữ lại mạch xanh dương)."""
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        lower_blue = np.array([90, 50, 50])
+        upper_blue = np.array([130, 255, 255])
+        
+        mask = cv2.inRange(hsv, lower_blue, upper_blue)
+        kernel = np.ones((5, 5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        return cv2.morphologyEx(mask, cv2.MORPH_DILATE, kernel)
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(upload.filename or 'img').suffix) as tmp:
-      tmp.write(contents)
-      temp_path = Path(tmp.name)
+    def _load_active_profile(self) -> None:
+        """Load profile và tính toán trước SIFT keypoints cho ảnh chuẩn."""
+        try:
+            active_file = self._settings.artifacts_dir / "active_profile.txt"
+            if not active_file.exists():
+                json_files = list((self._settings.artifacts_dir / "templates").glob("*.json"))
+                if not json_files: return
+                profile_name = json_files[0].stem
+            else:
+                profile_name = active_file.read_text(encoding="utf-8").strip()
 
-    try:
-      return await self.analyze_image(temp_path)
-    finally:
-      if temp_path.exists():
-        temp_path.unlink()
+            json_path = self._settings.artifacts_dir / "templates" / f"{profile_name}.json"
+            
+            if json_path.exists():
+                data = json.loads(json_path.read_text(encoding="utf-8"))
+                self._current_profile = BoardProfile(**data)
+                
+                ref_path = Path(self._current_profile.reference_image_path)
+                if ref_path.exists():
+                    self._ref_image_cache = cv2.imread(str(ref_path))
+                    
+                    mask_ref = self._create_pcb_mask(self._ref_image_cache)
+                    gray_ref = cv2.cvtColor(self._ref_image_cache, cv2.COLOR_BGR2GRAY)
+                    self._ref_kp, self._ref_des = self._sift.detectAndCompute(gray_ref, mask_ref)
+                    
+        except Exception as e:
+            print(f"Lỗi load profile: {e}")
 
-  async def analyze_image(self, path: Path) -> InferenceResponse:
-    template = self._load_template()
-    candidate = self._load_image(path, size=template["size"])
-    if candidate is None:
-      raise HTTPException(status_code=400, detail="Không xử lý được ảnh đầu vào")
-    return self._evaluate(candidate, template)
+    async def run(self, upload: UploadFile) -> InferenceResponse:
+        contents = await upload.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        return self._analyze(img)
 
-  async def analyze_bytes(self, data: bytes) -> InferenceResponse:
-    template = self._load_template()
-    candidate = self._load_image_from_bytes(data, size=template["size"])
-    if candidate is None:
-      raise HTTPException(status_code=400, detail="Không xử lý được frame camera")
-    return self._evaluate(candidate, template)
+    async def analyze_bytes(self, data: bytes) -> InferenceResponse:
+        nparr = np.frombuffer(data, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        return self._analyze(img)
 
-  def _load_template(self) -> Dict:
-    template_path = self._settings.artifacts_dir / "template_model.npz"
-    meta_path = self._settings.artifacts_dir / "template_meta.json"
-    if not template_path.exists() or not meta_path.exists():
-      raise HTTPException(
-        status_code=400,
-        detail="Chưa có template cho PCB. Vui lòng train với ảnh chuẩn (đủ linh kiện) trước khi inference.",
-      )
+    def _align_image(self, target_img: np.ndarray) -> np.ndarray:
+        """Căn chỉnh ảnh dùng Affine Partial + Masking."""
+        if self._ref_image_cache is None or self._ref_des is None: 
+            return target_img
+            
+        h_ref, w_ref = self._ref_image_cache.shape[:2]
+        h_tgt, w_tgt = target_img.shape[:2]
+        
+        # 1. Xoay thô nếu ngược chiều
+        if (w_ref > h_ref) and (h_tgt > w_tgt):
+            target_img = cv2.rotate(target_img, cv2.ROTATE_90_CLOCKWISE)
+        elif (h_ref > w_ref) and (w_tgt > h_tgt):
+            target_img = cv2.rotate(target_img, cv2.ROTATE_90_CLOCKWISE)
 
-    with np.load(template_path) as template_npz:
-      mean_image = template_npz["mean"]
-      std_image = template_npz["std"]
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    target_size = (mean_image.shape[1], mean_image.shape[0])
-    return {
-      "mean": mean_image,
-      "std": std_image,
-      "size": target_size,
-      "boardName": meta.get("boardName", "N/A"),
-    }
+        # 2. SIFT Matching với Mask
+        mask_tgt = self._create_pcb_mask(target_img)
+        gray_tgt = cv2.cvtColor(target_img, cv2.COLOR_BGR2GRAY)
+        kp2, des2 = self._sift.detectAndCompute(gray_tgt, mask_tgt)
+        
+        if des2 is None or len(kp2) < 5: return target_img
+        
+        bf = cv2.BFMatcher()
+        matches = bf.knnMatch(self._ref_des, des2, k=2)
+        good = []
+        for m, n in matches:
+            if m.distance < 0.75 * n.distance: good.append(m)
+            
+        if len(good) > 10:
+            src_pts = np.float32([self._ref_kp[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+            dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+            
+            # 3. Affine Partial:  Rotation + Translation + Scale 
+            M, inliers = cv2.estimateAffinePartial2D(dst_pts, src_pts)
+            if M is not None:
+                return cv2.warpAffine(target_img, M, (w_ref, h_ref), flags=cv2.INTER_CUBIC)
+                
+        return target_img
 
-  def _load_image(self, path: Path, size: tuple[int, int]) -> np.ndarray | None:
-    return preprocess_image_from_path(path, size)
+    def _calculate_iou(self, box1: List[float], box2: List[float]) -> float:
+        """Tính IoU giữa 2 box (xywh normalized)."""
+        # box: [x_center, y_center, w, h] -> convert to x1, y1, x2, y2
+        b1_x1, b1_y1 = box1[0] - box1[2]/2, box1[1] - box1[3]/2
+        b1_x2, b1_y2 = box1[0] + box1[2]/2, box1[1] + box1[3]/2
+        b2_x1, b2_y1 = box2[0] - box2[2]/2, box2[1] - box2[3]/2
+        b2_x2, b2_y2 = box2[0] + box2[2]/2, box2[1] + box2[3]/2
 
-  def _load_image_from_bytes(self, data: bytes, size: tuple[int, int]) -> np.ndarray | None:
-    return preprocess_image_from_bytes(data, size)
+        x_left = max(b1_x1, b2_x1)
+        y_top = max(b1_y1, b2_y1)
+        x_right = min(b1_x2, b2_x2)
+        y_bottom = min(b1_y2, b2_y2)
 
-  def _evaluate(self, candidate: np.ndarray, template: Dict) -> InferenceResponse:
-    compare_result = self._compare(candidate, template["mean"], template["std"])
-    missing_areas = self._build_missing_areas(compare_result["mask"])
-    anomaly_ratio = compare_result["anomaly_ratio"]
-    is_defective = anomaly_ratio >= 0.01
-    confidence = float(min(0.99, max(0.01, anomaly_ratio * 8)))
-    notes = f"PCB: {template['boardName']} · Sai lệch {anomaly_ratio * 100:.2f}%"
+        if x_right < x_left or y_bottom < y_top: return 0.0
+        intersection_area = (x_right - x_left) * (y_bottom - y_top)
+        b1_area = (b1_x2 - b1_x1) * (b1_y2 - b1_y1)
+        b2_area = (b2_x2 - b2_x1) * (b2_y2 - b2_y1)
+        return intersection_area / float(b1_area + b2_area - intersection_area)
 
-    return InferenceResponse(
-      isDefective=is_defective,
-      confidence=round(confidence, 3),
-      timestamp=datetime.utcnow(),
-      missingAreas=missing_areas,
-      notes=notes,
-    )
+    def _verify_visual(self, aligned_img: np.ndarray, box_norm: List[float]) -> float:
+        """So khớp hình ảnh (Template Matching) tại vị trí box."""
+        h, w = aligned_img.shape[:2]
+        cx, cy, bw, bh = box_norm
+        x1 = max(0, int((cx - bw/2) * w))
+        y1 = max(0, int((cy - bh/2) * h))
+        x2 = min(w, int((cx + bw/2) * w))
+        y2 = min(h, int((cy + bh/2) * h))
+        
+        if x2 <= x1 or y2 <= y1: return 0.0
+        try:
+            roi_test = aligned_img[y1:y2, x1:x2]
+            roi_ref = self._ref_image_cache[y1:y2, x1:x2]
+            g_test = cv2.cvtColor(roi_test, cv2.COLOR_BGR2GRAY)
+            g_ref = cv2.cvtColor(roi_ref, cv2.COLOR_BGR2GRAY)
+            res = cv2.matchTemplate(g_test, g_ref, cv2.TM_CCOEFF_NORMED)
+            return res[0][0]
+        except: return 0.0
 
-  def _compare(self, image: np.ndarray, template_mean: np.ndarray, template_std: np.ndarray) -> dict:
-    diff = np.abs(image - template_mean)
-    adaptive_threshold = np.maximum(template_std * 1.5, 0.05)
-    mask = diff > adaptive_threshold
-    mask = mask.astype(np.uint8) * 255
-    mask = cv2.medianBlur(mask, 5)
-    kernel = np.ones((5, 5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    anomaly_ratio = float(mask.mean() / 255.0)
-    return {"mask": mask, "anomaly_ratio": anomaly_ratio}
+    def _analyze(self, image: np.ndarray) -> InferenceResponse:
+        if self._current_profile is None:
+            self._load_active_profile()
+            
+        if self._current_profile is None or self._ref_image_cache is None:
+             return InferenceResponse(
+                 isDefective=False, confidence=0.0, timestamp=datetime.utcnow(), 
+                 boardName="Chưa Train Mạch", notes="Vui lòng train mạch trước."
+             )
 
-  def _build_missing_areas(self, mask: np.ndarray) -> List[MissingArea]:
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    h, w = mask.shape[:2]
-    surface = float(h * w)
-    areas: List[MissingArea] = []
+        # 1. Alignment
+        aligned_img = self._align_image(image)
 
-    for idx, contour in enumerate(contours):
-      x, y, cw, ch = cv2.boundingRect(contour)
-      area = cw * ch
-      if area < 200:
-        continue
-      area_ratio = area / surface
-      confidence = min(0.99, max(0.05, area_ratio * 10))
-      bbox = BoundingBox(
-        x=float(x / w),
-        y=float(y / h),
-        width=float(cw / w),
-        height=float(ch / h),
-      )
-      areas.append(
-        MissingArea(
-          id=f"region-{idx + 1}",
-          description=f"Vùng lệch ({int(x)}, {int(y)}) kích thước {cw}x{ch}",
-          confidence=round(confidence, 3),
-          bbox=bbox,
+        # 2. Detect: Lấy tất cả box 
+        results = self.model(aligned_img, verbose=False, conf=0.25)
+        
+        detected_candidates = []
+        for r in results:
+            for i, box in enumerate(r.boxes):
+                detected_candidates.append({
+                    'id': i,
+                    'box': box.xywhn[0].tolist(), # [x, y, w, h] normalized
+                    'conf': float(box.conf[0]),
+                    'is_used': False
+                })
+
+        # 3. GLOBAL MATCHING LOGIC 
+        potential_matches = []
+        for temp_comp in self._current_profile.components:
+            tx, ty, tw, th = temp_comp.box
+            
+            for candidate in detected_candidates:
+                iou = self._calculate_iou(temp_comp.box, candidate['box'])
+                dx, dy, _, _ = candidate['box']
+                dist = np.sqrt((tx - dx)**2 + (ty - dy)**2)
+
+                if iou > 0.01 or dist < 0.06:
+                    score = iou + (1.0 - dist) 
+                    potential_matches.append({
+                        'comp_id': temp_comp.id,
+                        'comp_box': temp_comp.box,
+                        'cand_idx': candidate['id'],
+                        'cand_item': candidate,
+                        'score': score
+                    })
+
+        potential_matches.sort(key=lambda x: x['score'], reverse=True)
+        
+        matched_results = {} 
+        comp_used = set()
+        
+        for match in potential_matches:
+            c_id = match['comp_id']
+            cand_item = match['cand_item']
+            
+            if c_id in comp_used or cand_item['is_used']:
+                continue
+            
+            matched_results[c_id] = match
+            cand_item['is_used'] = True
+            comp_used.add(c_id)
+
+        missing_areas = []
+        
+        for temp_comp in self._current_profile.components:
+            if temp_comp.id in matched_results:
+                match = matched_results[temp_comp.id]
+                candidate = match['cand_item']
+                
+                vis_score = self._verify_visual(aligned_img, candidate['box'])
+                conf = candidate['conf']
+
+                is_present = (vis_score > 0.15) or (conf > 0.30)
+                
+                if not is_present:
+                    tx, ty, tw, th = temp_comp.box
+                    missing_areas.append(MissingArea(
+                        id=f"wrong_{temp_comp.id}",
+                        description=f"FALSE?",
+                        confidence=conf,
+                        bbox=BoundingBox(x=tx - tw/2, y=ty - th/2, width=tw, height=th)
+                    ))
+            else:
+                tx, ty, tw, th = temp_comp.box
+                missing_areas.append(MissingArea(
+                    id=f"missing_{temp_comp.id}",
+                    description="MISSING",
+                    confidence=1.0,
+                    bbox=BoundingBox(x=tx - tw/2, y=ty - th/2, width=tw, height=th)
+                ))
+
+        is_defective = len(missing_areas) > 0
+        total_comps = len(self._current_profile.components)
+        found_comps = total_comps - len(missing_areas)
+
+        return InferenceResponse(
+            isDefective=is_defective,
+            confidence=1.0 if is_defective else 0.99,
+            timestamp=datetime.utcnow(),
+            boardName=self._current_profile.boardName,
+            missingAreas=missing_areas,
+            notes=f"Kiểm tra: {found_comps}/{total_comps} linh kiện. (Matches: {len(matched_results)})"
         )
-      )
-    return areas[:5]
-
