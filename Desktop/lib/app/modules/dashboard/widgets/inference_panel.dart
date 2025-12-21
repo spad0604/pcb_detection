@@ -124,12 +124,6 @@ class _ImageWithBoundingBoxes extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Debug: In số bounding boxes
-    print('🔍 Inference Panel - Số vùng sai lệch: ${result.missingAreas.length}');
-    for (var area in result.missingAreas) {
-      print('  - ${area.description}: bbox=${area.bbox}');
-    }
-    
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: Container(
@@ -221,8 +215,6 @@ class _BoundingBoxPainter extends CustomPainter {
       offsetY = (size.height - imageHeight * scale) / 2;
     }
     
-    print('🎨 Canvas: $size, Image: ${imageWidth}x$imageHeight, Scale: $scale, Offset: ($offsetX, $offsetY)');
-
     for (var area in missingAreas) {
       if (area.bbox == null) continue;
 
@@ -236,8 +228,6 @@ class _BoundingBoxPainter extends CustomPainter {
       
       final rect = Rect.fromLTRB(left, top, right, bottom);
       
-      print('📦 ${area.description}: bbox(${bbox.x}, ${bbox.y}, ${bbox.width}, ${bbox.height}) -> rect$rect');
-
       // Vẽ background mờ màu đỏ
       final bgPaint = Paint()
         ..color = Colors.red.withOpacity(0.25)

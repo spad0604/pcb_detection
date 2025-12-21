@@ -1,12 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
-import '../../models/training_job.dart';
 import 'dashboard_controller.dart';
 import 'widgets/activity_log_panel.dart';
-import 'widgets/dataset_panel.dart';
 import 'widgets/inference_panel.dart';
-import 'widgets/training_panel.dart';
 import 'widgets/video_stream_panel.dart';
 
 class DashboardView extends GetView<DashboardController> {
@@ -20,8 +17,8 @@ class DashboardView extends GetView<DashboardController> {
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
-            tooltip: 'Đồng bộ dataset',
-            onPressed: controller.fetchDataset,
+            tooltip: 'Làm mới camera',
+            onPressed: controller.refreshLiveFrame,
           ),
         ],
       ),
@@ -37,13 +34,9 @@ class DashboardView extends GetView<DashboardController> {
                   padding: padding,
                   child: Column(
                     children: [
-                      DatasetPanel(controller: controller),
-                      const SizedBox(height: 16),
-                      TrainingPanel(controller: controller),
+                      VideoStreamPanel(controller: controller),
                       const SizedBox(height: 16),
                       InferencePanel(controller: controller),
-                      const SizedBox(height: 16),
-                      VideoStreamPanel(controller: controller),
                       const SizedBox(height: 16),
                       ActivityLogPanel(controller: controller),
                     ],
@@ -59,9 +52,7 @@ class DashboardView extends GetView<DashboardController> {
                         child: SingleChildScrollView(
                           child: Column(
                             children: [
-                              DatasetPanel(controller: controller),
-                              const SizedBox(height: 16),
-                              TrainingPanel(controller: controller),
+                              VideoStreamPanel(controller: controller),
                               const SizedBox(height: 16),
                               InferencePanel(controller: controller),
                             ],
@@ -72,13 +63,7 @@ class DashboardView extends GetView<DashboardController> {
                       Expanded(
                         flex: 2,
                         child: SingleChildScrollView(
-                          child: Column(
-                            children: [
-                              VideoStreamPanel(controller: controller),
-                              const SizedBox(height: 16),
-                              ActivityLogPanel(controller: controller),
-                            ],
-                          ),
+                          child: ActivityLogPanel(controller: controller),
                         ),
                       ),
                     ],
@@ -87,30 +72,6 @@ class DashboardView extends GetView<DashboardController> {
           return Container(color: const Color(0xfff7f9fc), child: content);
         },
       ),
-      floatingActionButton: Obx(() {
-        if (controller.trainingStatus.value.state == TrainingState.running) {
-          return FloatingActionButton.extended(
-            onPressed: null,
-            backgroundColor: Colors.orange,
-            label: Row(
-              children: [
-                const SizedBox(
-                  height: 18,
-                  width: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                ),
-                const SizedBox(width: 12),
-                const Text('Đang train...'),
-              ],
-            ),
-          );
-        }
-        return FloatingActionButton.extended(
-          onPressed: controller.startTraining,
-          icon: const Icon(Icons.play_arrow_rounded),
-          label: const Text('Train model'),
-        );
-      }),
     );
   }
 }

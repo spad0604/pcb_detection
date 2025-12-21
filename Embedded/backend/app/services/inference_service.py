@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 from datetime import datetime
+import logging
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict
 
@@ -12,16 +13,26 @@ from ultralytics import YOLO
 from ..core.config import Settings
 from ..models.dto import BoundingBox, InferenceResponse, MissingArea, BoardProfile
 
+logger = logging.getLogger(__name__)
+
 class InferenceService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         
         # Load Model YOLO
-        self.model_path = settings.artifacts_dir / "best.pt"
-        if not self.model_path.exists():
-             self.model = YOLO("yolov8n.pt") 
-        else:
-             self.model = YOLO(str(self.model_path))
+        embedded_artifacts = Path(__file__).resolve().parents[3] / "data" / "artifacts" / "best.pt"
+        backend_artifacts = Path(__file__).resolve().parents[2] / "data" / "artifacts" / "best.pt"
+        candidates = [embedded_artifacts, backend_artifacts, settings.artifacts_dir / "best.pt"]
+
+        self.model_path = next((p for p in candidates if p.exists()), None)
+        if self.model_path is None:
+            searched = "\n - " + "\n - ".join(str(p) for p in candidates)
+            raise FileNotFoundError(
+                "Không tìm thấy file best.pt. Đã kiểm tra:" + searched
+            )
+
+        logger.info("Đang load model YOLO từ %s", self.model_path)
+        self.model = YOLO(str(self.model_path))
              
         # Cache profile & SIFT data
         self._current_profile: Optional[BoardProfile] = None
@@ -163,8 +174,11 @@ class InferenceService:
             
         if self._current_profile is None or self._ref_image_cache is None:
              return InferenceResponse(
-                 isDefective=False, confidence=0.0, timestamp=datetime.utcnow(), 
-                 boardName="Chưa Train Mạch", notes="Vui lòng train mạch trước."
+                 isDefective=False,
+                 confidence=0.0,
+                 timestamp=datetime.utcnow(),
+                 boardName="PCB Inspector",
+                 notes="Chưa tìm thấy profile mạch (thiếu active_profile).",
              )
 
         # 1. Alignment

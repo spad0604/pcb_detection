@@ -6,15 +6,15 @@
 // tree, read text, and verify that the values of widget properties are correct.
 
 import 'dart:io';
+import 'dart:typed_data';
 
-import 'package:desktop/app/models/dataset_sample.dart';
 import 'package:desktop/app/models/inference_result.dart';
-import 'package:desktop/app/models/training_job.dart';
 import 'package:desktop/app/services/api_service.dart';
 import 'package:desktop/main.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 void main() {
   setUp(() {
@@ -22,12 +22,12 @@ void main() {
     Get.put<ApiService>(_FakeApiService());
   });
 
-  testWidgets('Dashboard renders key panels', (WidgetTester tester) async {
+  testWidgets('Dashboard renders inference-only panels', (WidgetTester tester) async {
     await tester.pumpWidget(const PcbInspectorApp());
 
-    expect(find.text('Dataset'), findsOneWidget);
-    expect(find.text('Training'), findsOneWidget);
-    expect(find.text('Inference'), findsOneWidget);
+    expect(find.text('Live conveyor feed'), findsOneWidget);
+    expect(find.text('Kiểm tra PCB (Upload ảnh)'), findsOneWidget);
+    expect(find.text('Activity log'), findsOneWidget);
   });
 }
 
@@ -35,16 +35,17 @@ class _FakeApiService extends ApiService {
   _FakeApiService() : super(dio: Dio(), baseUrl: '');
 
   @override
-  Future<List<DatasetSample>> fetchDataset() async => [];
+  WebSocketChannel? createVideoStreamChannel() => null;
 
   @override
-  Future<DatasetSample?> uploadSample({required File file, required String label}) async => null;
+  Future<Uint8List?> fetchLiveFrame() async => Uint8List(0);
 
   @override
-  Future<String?> startTraining({required int epochs, required double testSplit}) async => 'job';
-
-  @override
-  Future<TrainingJobStatus> fetchTrainingStatus(String jobId) async => TrainingJobStatus.idle();
+  Future<InferenceResult?> fetchLiveAnalysis() async => InferenceResult(
+        isDefective: false,
+        confidence: 0.85,
+        timestamp: DateTime.now(),
+      );
 
   @override
   Future<InferenceResult?> runInference(File file) async => InferenceResult(

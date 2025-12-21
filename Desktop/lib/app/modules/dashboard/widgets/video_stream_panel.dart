@@ -46,11 +46,11 @@ class VideoStreamPanel extends StatelessWidget {
             const SizedBox(height: 12),
             Obx(() {
               final analysis = controller.liveAnalysis.value;
-              final statusText = analysis == null
-                  ? 'Đang chờ template...'
+                final statusText = analysis == null
+                  ? 'Đang chờ camera...'
                   : analysis.isDefective
-                      ? 'Phát hiện sai lệch'
-                      : 'PCB ổn định';
+                    ? 'Phát hiện sai lệch'
+                    : 'PCB ổn định';
               final badgeColor =
                   analysis == null ? Colors.grey : analysis.isDefective ? Colors.red : Colors.green;
               final note = analysis?.notes;

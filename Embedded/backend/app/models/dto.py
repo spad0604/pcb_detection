@@ -21,9 +21,9 @@ class TrainingJob(BaseModel):
   jobId: str
   status: str
   progress: float = 0.0
-  message: Optional[str]
-  boardName: Optional[str]
-  metrics: Optional[Dict[str, Any]]
+  message: Optional[str] = None
+  boardName: Optional[str] = None
+  metrics: Optional[Dict[str, Any]] = None
 
   @validator("progress")
   def clamp_progress(cls, value: float) -> float:

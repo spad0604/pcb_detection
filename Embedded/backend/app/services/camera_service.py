@@ -231,33 +231,6 @@ class CameraService:
       except Exception:
         return self._last_frame
 
-  def get_frame_from_dataset(self, dataset_service=None) -> bytes | None:
-    """Lấy frame từ dataset nếu không có camera."""
-    if dataset_service is None:
-      from .dataset_service import DatasetService
-      dataset_service = DatasetService(self._settings)
-    samples = dataset_service.list_samples()
-    
-    if not samples:
-      return None
-    
-    try:
-      latest = sorted(samples, key=lambda x: x.createdAt, reverse=True)[0]
-      image_path = Path(latest.path)
-      if image_path.exists():
-        img = Image.open(image_path)
-        if img.mode != "RGB":
-          img = img.convert("RGB")
-        img.thumbnail((1280, 720), Image.Resampling.LANCZOS)
-        buffer = io.BytesIO()
-        img.save(buffer, format="JPEG", quality=85)
-        buffer.seek(0)
-        return buffer.read()
-    except Exception:
-      pass
-    
-    return None
-
   def get_placeholder_frame(self) -> bytes:
     """Tạo placeholder frame."""
     img = Image.new("RGB", (640, 360), color=(40, 40, 40))

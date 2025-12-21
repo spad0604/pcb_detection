@@ -1,10 +1,7 @@
-import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
-import '../../../models/dataset_sample.dart';
 import '../dashboard_controller.dart';
-import 'stat_card.dart';
 
 class DatasetPanel extends StatelessWidget {
   const DatasetPanel({super.key, required this.controller});
@@ -20,182 +17,83 @@ class DatasetPanel extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            LayoutBuilder(builder: (context, constraints) {
-              final stacked = constraints.maxWidth < 700;
-              final labelSelector = Obx(() => Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: ['ok', 'missing'].map((label) {
-                      return ChoiceChip(
-                        label: Text(
-                            label == 'ok' ? 'Đủ linh kiện' : 'Thiếu linh kiện'),
-                        selected: controller.activeLabel.value == label,
-                        onSelected: (_) => controller.changeLabel(label),
-                      );
-                    }).toList(),
-                  ));
-              final uploadButton = Obx(() => ElevatedButton.icon(
-                    onPressed: controller.isUploading.value
-                        ? null
-                        : controller.addSamples,
-                    icon: controller.isUploading.value
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.upload_file),
-                    label: const Text('Thêm ảnh'),
-                  ));
-
-              if (stacked) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Dataset',
-                      style:
-                          TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 12),
-                    labelSelector,
-                    const SizedBox(height: 12),
-                    Align(alignment: Alignment.centerLeft, child: uploadButton),
-                  ],
-                );
-              }
-
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  const Text(
-                    'Dataset',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(width: 24),
-                  Expanded(
-                    child: Align(
-                      alignment: Alignment.centerRight,
-                      child: labelSelector,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  uploadButton,
-                ],
-              );
-            }),
-            const SizedBox(height: 16),
-            Obx(() {
-              final total = controller.dataset.length;
-              final missing =
-                  controller.dataset.where((s) => s.label == 'missing').length;
-              final ok = total - missing;
-              return LayoutBuilder(builder: (context, constraints) {
-                final vertical = constraints.maxWidth < 600;
-                final cards = [
-                  StatCard(
-                    icon: Icons.storage_rounded,
-                    title: 'Tổng mẫu',
-                    value: total.toString(),
-                    subtitle: 'Ảnh đang theo dõi',
-                  ),
-                  StatCard(
-                    icon: Icons.check_circle_outline,
-                    title: 'OK',
-                    value: ok.toString(),
-                    color: Colors.green,
-                  ),
-                  StatCard(
-                    icon: Icons.error_outline,
-                    title: 'Thiếu linh kiện',
-                    value: missing.toString(),
-                    color: Colors.red,
-                  ),
-                ];
-                if (vertical) {
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: cards
-                        .map((c) => Padding(
-                              padding: const EdgeInsets.only(bottom: 12),
-                              child: c,
-                            ))
-                        .toList(),
-                  );
-                }
-                
-                return Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: cards
-                      .map((c) => Expanded(
-                            child: Padding(
-                              padding: const EdgeInsets.only(right: 12),
-                              child: c,
-                            ),
-                          ))
-                      .toList(),
-                );
-              });
-            }),
-            const SizedBox(height: 24),
-            const Text('Mẫu gần nhất',
-                style: TextStyle(fontWeight: FontWeight.w600)),
+            const Text(
+              'Trạng thái mô hình',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+            ),
             const SizedBox(height: 12),
             Obx(() {
-              if (controller.dataset.isEmpty) {
-                return const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 32),
-                  child: Center(child: Text('Chưa có dữ liệu nào.')),
+              final inference = controller.lastInference.value;
+              if (inference == null) {
+                return _InfoBanner(
+                  icon: Icons.info_outline,
+                  color: Colors.blueGrey,
+                  title: 'Chưa có kết quả inference',
+                  body:
+                      'Upload một ảnh PCB bất kỳ để kiểm tra mô hình YOLO đã huấn luyện sẵn.',
                 );
               }
-                final rows = controller.dataset
-                  .toList()
-                  .sortedBy((sample) => sample.createdAt)
-                  .reversed
-                  .take(6)
-                  .toList();
-              return ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Table(
-                  columnWidths: const {
-                    0: FlexColumnWidth(3),
-                    1: FlexColumnWidth(2),
-                    2: FlexColumnWidth(1.5),
-                    3: FlexColumnWidth(1.5),
-                  },
-                  defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+
+              final verdict = inference.isDefective ? 'PCB THIẾU LINH KIỆN' : 'PCB OK';
+              final verdictColor = inference.isDefective ? Colors.red : Colors.green;
+              final missing = inference.missingAreas.length;
+
+              return Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  color: verdictColor.withOpacity(0.1),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const TableRow(
-                      decoration: BoxDecoration(color: Color(0xfff2f4f8)),
-                      children: [
-                        Padding(
-                          padding: EdgeInsets.all(12),
-                          child: Text('Tên file',
-                              style: TextStyle(fontWeight: FontWeight.w600)),
-                        ),
-                        Padding(
-                          padding: EdgeInsets.all(12),
-                          child: Text('Label',
-                              style: TextStyle(fontWeight: FontWeight.w600)),
-                        ),
-                        Padding(
-                          padding: EdgeInsets.all(12),
-                          child: Text('Kích thước',
-                              style: TextStyle(fontWeight: FontWeight.w600)),
-                        ),
-                        Padding(
-                          padding: EdgeInsets.all(12),
-                          child: Text('Thời gian',
-                              style: TextStyle(fontWeight: FontWeight.w600)),
-                        ),
-                      ],
+                    Text(
+                      verdict,
+                      style: TextStyle(
+                        color: verdictColor,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
-                    ...rows.map(_datasetRow),
+                    const SizedBox(height: 4),
+                    Text('Confidence ${(inference.confidence * 100).toStringAsFixed(1)}%'),
+                    const SizedBox(height: 4),
+                    Text('Số vùng cảnh báo: $missing'),
+                    if (controller.lastInferenceImagePath.value != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(
+                            'Ảnh cuối: ${controller.lastInferenceImagePath.value!.split('/').last}'),
+                      ),
                   ],
                 ),
               );
             }),
+            const SizedBox(height: 24),
+            const Text(
+              'Quy trình vận hành',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 12),
+            _StepItem(
+              index: 1,
+              title: 'Bật camera',
+              body:
+                  'Dùng switch "Live conveyor feed" để bật/tắt stream. Khi stream bật, ứng dụng sẽ tự động theo dõi và phân tích.',
+            ),
+            _StepItem(
+              index: 2,
+              title: 'Theo dõi realtime',
+              body:
+                  'Phần Live feed hiển thị bounding box và trạng thái phân tích hiện tại (từ YOLO).',
+            ),
+            _StepItem(
+              index: 3,
+              title: 'Kiểm tra thủ công',
+              body:
+                  'Sử dụng nút "Upload & Kiểm tra" để tải ảnh PCB bất kỳ và nhận kết quả ngay lập tức.',
+            ),
           ],
         ),
       ),
@@ -203,33 +101,88 @@ class DatasetPanel extends StatelessWidget {
   }
 }
 
-TableRow _datasetRow(DatasetSample sample) {
-  final labelColor = sample.label == 'missing' ? Colors.deepOrange : Colors.teal;
-  return TableRow(
-    decoration: const BoxDecoration(color: Colors.white),
-    children: [
-      Padding(
-        padding: const EdgeInsets.all(12),
-        child: Text(sample.name, overflow: TextOverflow.ellipsis),
+class _InfoBanner extends StatelessWidget {
+  const _InfoBanner({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.body,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String title;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        color: color.withOpacity(0.12),
       ),
-      Padding(
-        padding: const EdgeInsets.all(12),
-        child: Chip(
-          backgroundColor: labelColor.withOpacity(0.12),
-          label: Text(
-            sample.label,
-            style: TextStyle(color: labelColor, fontWeight: FontWeight.w600),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style:
+                        TextStyle(color: color, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 4),
+                Text(body),
+              ],
+            ),
           ),
-        ),
+        ],
       ),
-      Padding(
-        padding: const EdgeInsets.all(12),
-        child: Text(sample.formattedSize),
+    );
+  }
+}
+
+class _StepItem extends StatelessWidget {
+  const _StepItem({
+    required this.index,
+    required this.title,
+    required this.body,
+  });
+
+  final int index;
+  final String title;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CircleAvatar(
+            radius: 14,
+            backgroundColor: Theme.of(context).colorScheme.primary,
+            child: Text('$index',
+                style: const TextStyle(color: Colors.white, fontSize: 12)),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: const TextStyle(fontWeight: FontWeight.w600)),
+                const SizedBox(height: 4),
+                Text(body, style: const TextStyle(color: Colors.black54)),
+              ],
+            ),
+          ),
+        ],
       ),
-      Padding(
-        padding: const EdgeInsets.all(12),
-        child: Text(sample.formattedDate),
-      ),
-    ],
-  );
+    );
+  }
 }
