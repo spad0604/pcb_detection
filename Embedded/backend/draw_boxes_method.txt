@@ -1,0 +1,22 @@
+    def draw_detection_boxes(self, image: np.ndarray, response: InferenceResponse) -> bytes:
+        """Vẽ bounding boxes + labels lên frame và trả về JPEG bytes."""
+        annotated = image.copy()
+        h, w = annotated.shape[:2]
+        
+        # Vẽ missing areas (RED)
+        for area in response.missingAreas:
+            x1 = int(area.bbox.x * w)
+            y1 = int(area.bbox.y * h)
+            x2 = int((area.bbox.x + area.bbox.width) * w)
+            y2 = int((area.bbox.y + area.bbox.height) * h)
+            
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            
+            # Label
+            label = f"{area.description} ({area.confidence:.0%})"
+            cv2.putText(annotated, label, (x1, y1 - 5),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+        
+        # Convert to JPEG bytes
+        _, buffer = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        return buffer.tobytes()

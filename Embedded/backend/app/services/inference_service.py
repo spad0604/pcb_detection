@@ -19,20 +19,18 @@ class InferenceService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         
-        # Load Model YOLO
+        # Load Model YOLO từ Embedded/data/artifacts/best.pt
         embedded_artifacts = Path(__file__).resolve().parents[3] / "data" / "artifacts" / "best.pt"
         backend_artifacts = Path(__file__).resolve().parents[2] / "data" / "artifacts" / "best.pt"
         candidates = [embedded_artifacts, backend_artifacts, settings.artifacts_dir / "best.pt"]
 
         self.model_path = next((p for p in candidates if p.exists()), None)
         if self.model_path is None:
-            searched = "\n - " + "\n - ".join(str(p) for p in candidates)
-            raise FileNotFoundError(
-                "Không tìm thấy file best.pt. Đã kiểm tra:" + searched
-            )
-
-        logger.info("Đang load model YOLO từ %s", self.model_path)
-        self.model = YOLO(str(self.model_path))
+            logger.warning("Không tìm thấy best.pt, dùng yolov8n.pt")
+            self.model = YOLO("yolov8n.pt")
+        else:
+            logger.info(f"✓ Đã load model YOLO từ: {self.model_path}")
+            self.model = YOLO(str(self.model_path))
              
         # Cache profile & SIFT data
         self._current_profile: Optional[BoardProfile] = None
@@ -41,6 +39,7 @@ class InferenceService:
         self._sift = cv2.SIFT_create()
         self._ref_kp = None  # Keypoints của ảnh gốc
         self._ref_des = None # Descriptors của ảnh gốc
+        self._last_aligned_img: Optional[np.ndarray] = None  # Cache ảnh đã align để vẽ
 
     def _create_pcb_mask(self, img: np.ndarray) -> np.ndarray:
         """Tạo mask lọc nền (Chỉ giữ lại mạch xanh dương)."""
@@ -92,26 +91,76 @@ class InferenceService:
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         return self._analyze(img)
 
+    async def analyze_image(self, img: np.ndarray) -> InferenceResponse:
+        """API wrapper: Phân tích từ numpy array BGR (cho camera raw frame)."""
+        return self._analyze(img)
+
+    def draw_detection_boxes(self, img: np.ndarray, result: InferenceResponse) -> bytes:
+        """API wrapper: Vẽ bounding boxes lên ảnh và trả về JPEG bytes."""
+        # Sử dụng ảnh đã align (sau xoay + warp) thay vì ảnh gốc
+        aligned = self._last_aligned_img if self._last_aligned_img is not None else img
+        if aligned is None or result is None:
+            return b""
+        
+        vis = aligned.copy()
+        h, w = vis.shape[:2]
+        
+        logger.info(f"Drawing boxes on aligned image: WxH={w}x{h} (shape={vis.shape}), missing areas: {len(result.missingAreas)}")
+        
+        # Vẽ các vùng thiếu từ result (chỉ box mỏng màu đỏ, không có text)
+        for area in result.missingAreas:
+            if not area.bbox:
+                continue
+            x1 = int(area.bbox.x * w)
+            y1 = int(area.bbox.y * h)
+            x2 = int((area.bbox.x + area.bbox.width) * w)
+            y2 = int((area.bbox.y + area.bbox.height) * h)
+            logger.info(f"Box: ({x1},{y1}) -> ({x2},{y2}), normalized: ({area.bbox.x:.3f},{area.bbox.y:.3f},{area.bbox.width:.3f},{area.bbox.height:.3f})")
+            cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 0, 255), 5)
+        
+        # Encode JPEG để stream
+        success, buffer = cv2.imencode('.jpg', vis, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if not success:
+            return b""
+        
+        # Debug: Lưu ảnh ra file để kiểm tra
+        try:
+            cv2.imwrite("/tmp/annotated_result.jpg", vis)
+            logger.info(f"✓ Đã lưu ảnh annotated: /tmp/annotated_result.jpg (shape={vis.shape})")
+        except Exception as e:
+            logger.warning(f"Không lưu được ảnh annotated: {e}")
+        
+        return buffer.tobytes()
+
     def _align_image(self, target_img: np.ndarray) -> np.ndarray:
         """Căn chỉnh ảnh dùng Affine Partial + Masking."""
         if self._ref_image_cache is None or self._ref_des is None: 
+            logger.warning("Không có ref_image hoặc SIFT descriptors, bỏ qua alignment")
             return target_img
             
         h_ref, w_ref = self._ref_image_cache.shape[:2]
         h_tgt, w_tgt = target_img.shape[:2]
+        logger.info(f"Alignment: Ref={w_ref}x{h_ref}, Target={w_tgt}x{h_tgt}")
         
         # 1. Xoay thô nếu ngược chiều
+        rotated = False
         if (w_ref > h_ref) and (h_tgt > w_tgt):
             target_img = cv2.rotate(target_img, cv2.ROTATE_90_CLOCKWISE)
+            rotated = True
+            logger.info("→ Đã xoay ảnh 90° (portrait→landscape)")
         elif (h_ref > w_ref) and (w_tgt > h_tgt):
             target_img = cv2.rotate(target_img, cv2.ROTATE_90_CLOCKWISE)
+            rotated = True
+            logger.info("→ Đã xoay ảnh 90° (landscape→portrait)")
 
         # 2. SIFT Matching với Mask
         mask_tgt = self._create_pcb_mask(target_img)
         gray_tgt = cv2.cvtColor(target_img, cv2.COLOR_BGR2GRAY)
         kp2, des2 = self._sift.detectAndCompute(gray_tgt, mask_tgt)
         
-        if des2 is None or len(kp2) < 5: return target_img
+        if des2 is None or len(kp2) < 5:
+            logger.warning(f"SIFT không đủ keypoints ({len(kp2) if kp2 else 0}), bỏ qua warp")
+            return target_img
         
         bf = cv2.BFMatcher()
         matches = bf.knnMatch(self._ref_des, des2, k=2)
@@ -120,13 +169,17 @@ class InferenceService:
             if m.distance < 0.75 * n.distance: good.append(m)
             
         if len(good) > 10:
+            logger.info(f"SIFT: {len(good)} good matches → Affine warp")
             src_pts = np.float32([self._ref_kp[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
             dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
             
             # 3. Affine Partial:  Rotation + Translation + Scale 
             M, inliers = cv2.estimateAffinePartial2D(dst_pts, src_pts)
             if M is not None:
+                logger.info("→ Đã warp ảnh về kích thước ref")
                 return cv2.warpAffine(target_img, M, (w_ref, h_ref), flags=cv2.INTER_CUBIC)
+        else:
+            logger.warning(f"SIFT chỉ có {len(good)} matches (<10), không warp")
                 
         return target_img
 
@@ -174,18 +227,19 @@ class InferenceService:
             
         if self._current_profile is None or self._ref_image_cache is None:
              return InferenceResponse(
-                 isDefective=False,
-                 confidence=0.0,
-                 timestamp=datetime.utcnow(),
-                 boardName="PCB Inspector",
-                 notes="Chưa tìm thấy profile mạch (thiếu active_profile).",
+                 isDefective=False, confidence=0.0, timestamp=datetime.utcnow(), 
+                 boardName="Chưa Train Mạch", notes="Vui lòng train mạch trước."
              )
 
-        # 1. Alignment
+        # 1. Alignment (Xoay + SIFT warp)
+        logger.info(f"Input image shape: {image.shape}")
         aligned_img = self._align_image(image)
+        self._last_aligned_img = aligned_img  # Lưu để vẽ boxes sau
+        logger.info(f"Aligned image shape: {aligned_img.shape}")
 
         # 2. Detect: Lấy tất cả box 
         results = self.model(aligned_img, verbose=False, conf=0.25)
+        logger.info(f"YOLO detected {len(results[0].boxes) if results else 0} boxes")
         
         detected_candidates = []
         for r in results:
@@ -249,7 +303,7 @@ class InferenceService:
                     tx, ty, tw, th = temp_comp.box
                     missing_areas.append(MissingArea(
                         id=f"wrong_{temp_comp.id}",
-                        description=f"FALSE?",
+                        description="",
                         confidence=conf,
                         bbox=BoundingBox(x=tx - tw/2, y=ty - th/2, width=tw, height=th)
                     ))
@@ -257,7 +311,7 @@ class InferenceService:
                 tx, ty, tw, th = temp_comp.box
                 missing_areas.append(MissingArea(
                     id=f"missing_{temp_comp.id}",
-                    description="MISSING",
+                    description="",
                     confidence=1.0,
                     bbox=BoundingBox(x=tx - tw/2, y=ty - th/2, width=tw, height=th)
                 ))

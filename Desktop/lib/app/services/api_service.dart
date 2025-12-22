@@ -40,8 +40,10 @@ class ApiService {
 
   Future<Uint8List?> fetchLiveFrame() async {
     try {
+      // Dùng /api/stream/annotated để có detection boxes khi có (TTL 5s)
+      // Sau đó tự động fallback về raw stream
       final response = await _dio.get<List<int>>(
-        '/api/stream/frame',
+        '/api/stream/annotated',
         options: Options(
           responseType: ResponseType.bytes,
           receiveTimeout: const Duration(milliseconds: 2000),
@@ -96,6 +98,66 @@ class ApiService {
       return channel;
     } catch (e) {
       return null;
+    }
+  }
+
+  // ===== Control Panel APIs =====
+  
+  Future<void> triggerTestDetection() async {
+    try {
+      await _dio.post('/api/line/test_detection');
+    } on DioException catch (error) {
+      final detail = error.response?.data?['detail'] as String?;
+      throw ApiException(detail ?? _describe(error));
+    }
+  }
+
+  Future<Map<String, dynamic>> getAvailablePorts() async {
+    try {
+      final response = await _dio.get<Map<String, dynamic>>('/api/config/available_ports');
+      return response.data ?? {};
+    } on DioException catch (error) {
+      throw ApiException(_describe(error));
+    }
+  }
+
+  Future<void> switchCamera(int cameraIndex) async {
+    try {
+      await _dio.post('/api/config/camera', data: {'camera_index': cameraIndex});
+    } on DioException catch (error) {
+      final detail = error.response?.data?['detail'] as String?;
+      throw ApiException(detail ?? _describe(error));
+    }
+  }
+
+  Future<Map<String, dynamic>> getCameraInfo() async {
+    try {
+      final response = await _dio.get<Map<String, dynamic>>('/api/config/camera');
+      return response.data ?? {};
+    } on DioException catch (error) {
+      throw ApiException(_describe(error));
+    }
+  }
+
+  Future<Map<String, dynamic>> getLineStatus() async {
+    try {
+      final response = await _dio.get<Map<String, dynamic>>('/api/line/status');
+      return response.data ?? {};
+    } on DioException catch (error) {
+      throw ApiException(_describe(error));
+    }
+  }
+
+  Future<InferenceResult> getLastLineInference() async {
+    try {
+      final response = await _dio.get<Map<String, dynamic>>('/api/line/last_inference');
+      if (response.data == null) {
+        throw ApiException('Chưa có inference nào từ băng tải');
+      }
+      return InferenceResult.fromJson(response.data!);
+    } on DioException catch (error) {
+      final detail = error.response?.data?['detail'] as String?;
+      throw ApiException(detail ?? _describe(error));
     }
   }
 }

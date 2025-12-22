@@ -3,6 +3,7 @@ import 'package:get/get.dart';
 
 import 'dashboard_controller.dart';
 import 'widgets/activity_log_panel.dart';
+import 'widgets/control_panel.dart';
 import 'widgets/inference_panel.dart';
 import 'widgets/video_stream_panel.dart';
 
@@ -36,6 +37,8 @@ class DashboardView extends GetView<DashboardController> {
                     children: [
                       VideoStreamPanel(controller: controller),
                       const SizedBox(height: 16),
+                      ControlPanel(),
+                      const SizedBox(height: 16),
                       InferencePanel(controller: controller),
                       const SizedBox(height: 16),
                       ActivityLogPanel(controller: controller),
@@ -63,7 +66,13 @@ class DashboardView extends GetView<DashboardController> {
                       Expanded(
                         flex: 2,
                         child: SingleChildScrollView(
-                          child: ActivityLogPanel(controller: controller),
+                          child: Column(
+                            children: [
+                              ControlPanel(),
+                              const SizedBox(height: 16),
+                              ActivityLogPanel(controller: controller),
+                            ],
+                          ),
                         ),
                       ),
                     ],

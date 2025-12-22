@@ -51,23 +51,19 @@ class CameraService:
 
   def __init__(self, settings: Settings, camera_index: int | None = None) -> None:
     self._settings = settings
-    # Nếu camera_index là None, tự động detect camera ngoài
+    # Nếu camera_index là None, sử dụng camera index 0 (DroidCam/phone camera)
     if camera_index is None:
-      logger.info("Đang tự động phát hiện camera ngoài...")
-      detected = self.detect_external_camera()
-      if detected is not None:
-        self._camera_index = detected
-        logger.info(f"Đã phát hiện camera ngoài tại index {detected}")
-      else:
-        # Fallback về index 1 nếu không detect được
-        self._camera_index = 1
-        logger.warning("Không phát hiện được camera ngoài, sử dụng index 1 (có thể không hoạt động)")
+      # Sử dụng index 0 - thường là camera điện thoại qua DroidCam/IP Webcam
+      self._camera_index = 0
+      logger.info(f"Sử dụng camera mặc định tại index 0 (camera điện thoại)")
     else:
       self._camera_index = camera_index
       logger.info(f"Sử dụng camera index {camera_index} (từ CAMERA_INDEX env var)")
     self._cap: cv2.VideoCapture | None = None
     self._lock = threading.Lock()
     self._last_frame: bytes | None = None
+    self._last_frame_time: float = 0.0
+    self._frame_cache_duration = 0.03  # Cache 30ms để tránh read quá nhiều
     self._is_initialized = False
 
   def _initialize_camera(self) -> bool:
@@ -87,14 +83,17 @@ class CameraService:
       logger.info(f"Đang mở camera tại index {self._camera_index}...")
       self._cap = cv2.VideoCapture(self._camera_index)
       if self._cap.isOpened():
-        # Set resolution cao hơn để có hình ảnh rõ hơn ở khoảng cách gần
+        # Thử set resolution cao, nhưng không bắt buộc (DroidCam có thể không hỗ trợ)
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
-        
-        # Tăng FPS nếu camera hỗ trợ
         self._cap.set(cv2.CAP_PROP_FPS, 30)
         
-        logger.info(f"Đã set resolution 1920x1080 @ 30fps")
+        # Lấy resolution thực tế mà camera đang dùng
+        actual_width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        actual_fps = self._cap.get(cv2.CAP_PROP_FPS)
+        
+        logger.info(f"Camera resolution: {actual_width}x{actual_height} @ {actual_fps}fps")
         
         # Cấu hình focus cho khoảng cách ngắn (30cm)
         try:
@@ -197,9 +196,34 @@ class CameraService:
     with self._lock:
       return self._initialize_camera()
 
-  def get_frame(self) -> bytes | None:
-    """Lấy frame từ camera dưới dạng JPEG bytes."""
+  def get_raw_frame(self) -> np.ndarray | None:
+    """Lấy frame RAW từ camera (BGR format) - dùng cho detection chất lượng cao."""
     with self._lock:
+      if not self._initialize_camera():
+        return None
+
+      if self._cap is None:
+        return None
+
+      try:
+        ret, frame = self._cap.read()
+        if not ret or frame is None:
+          return None
+        return frame  # Trả về raw numpy array BGR
+      except Exception as e:
+        logger.error(f"Lỗi đọc raw frame: {e}")
+        return None
+
+  def get_frame(self) -> bytes | None:
+    """Lấy frame từ camera dưới dạng JPEG bytes (nén cho streaming)."""
+    import time
+    
+    with self._lock:
+      # Cache frame trong 30ms để tránh read quá nhiều lần
+      current_time = time.time()
+      if self._last_frame and (current_time - self._last_frame_time) < self._frame_cache_duration:
+        return self._last_frame
+      
       if not self._initialize_camera():
         return None
 
@@ -217,16 +241,17 @@ class CameraService:
         # Convert to PIL Image
         img = Image.fromarray(frame_rgb)
         
-        # Resize nếu cần
-        img.thumbnail((1280, 720), Image.Resampling.LANCZOS)
+        # Resize nhỏ hơn để stream nhanh (640x480 thay vì 1280x720)
+        img.thumbnail((640, 480), Image.Resampling.LANCZOS)
         
-        # Convert to JPEG bytes
+        # Convert to JPEG bytes với quality thấp hơn để giảm size
         buffer = io.BytesIO()
-        img.save(buffer, format="JPEG", quality=85)
+        img.save(buffer, format="JPEG", quality=70)
         buffer.seek(0)
         
         frame_bytes = buffer.read()
         self._last_frame = frame_bytes
+        self._last_frame_time = current_time
         return frame_bytes
       except Exception:
         return self._last_frame
@@ -261,6 +286,36 @@ class CameraService:
         self._cap.release()
         self._cap = None
       self._is_initialized = False
+
+  def is_opened(self) -> bool:
+    """Kiểm tra camera có đang mở không."""
+    with self._lock:
+      return self._cap is not None and self._cap.isOpened()
+
+  def switch_camera(self, new_index: int) -> bool:
+    """Chuyển sang camera index khác."""
+    with self._lock:
+      # Đóng camera hiện tại
+      if self._cap is not None:
+        self._cap.release()
+        self._cap = None
+      
+      # Mở camera mới
+      self._camera_index = new_index  # Sửa thành _camera_index
+      self._cap = cv2.VideoCapture(new_index)
+      
+      if not self._cap.isOpened():
+        logger.error(f"Không thể mở camera index {new_index}")
+        self._cap = None
+        return False
+      
+      # Cấu hình lại
+      self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+      self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+      self._cap.set(cv2.CAP_PROP_FPS, 30)
+      self._is_initialized = True
+      logger.info(f"Đã chuyển sang camera index {new_index}")
+      return True
 
   def __del__(self) -> None:
     """Destructor để đảm bảo camera được giải phóng."""

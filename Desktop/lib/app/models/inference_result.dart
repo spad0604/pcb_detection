@@ -49,6 +49,7 @@ class InferenceResult {
     required this.timestamp,
     this.missingAreas = const [],
     this.notes,
+    this.annotatedImage,
   });
 
   final bool isDefective;
@@ -56,6 +57,7 @@ class InferenceResult {
   final DateTime timestamp;
   final List<MissingArea> missingAreas;
   final String? notes;
+  final String? annotatedImage;
 
   factory InferenceResult.fromJson(Map<String, dynamic> json) =>
       InferenceResult(
@@ -67,5 +69,6 @@ class InferenceResult {
             .map((e) => MissingArea.fromJson(e as Map<String, dynamic>))
             .toList(),
         notes: json['notes'] as String?,
+        annotatedImage: json['annotatedImage'] as String?,
       );
 }

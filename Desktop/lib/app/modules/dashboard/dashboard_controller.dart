@@ -25,6 +25,14 @@ class DashboardController extends GetxController {
   final Rxn<Uint8List> liveFrame = Rxn<Uint8List>();
   final liveEnabled = true.obs;
 
+  // Control panel state
+  final availablePorts = <String>[].obs;
+  final selectedPort = '/dev/ttyACM0'.obs;
+  final selectedCameraIndex = 4.obs;
+  final isCameraOpened = false.obs;
+  final isTestingDetection = false.obs;
+  final Rxn<Map<String, dynamic>> lineStatus = Rxn<Map<String, dynamic>>();
+
   Timer? _liveTimer;
   Timer? _analysisTimer;
   WebSocketChannel? _wsChannel;
@@ -36,6 +44,9 @@ class DashboardController extends GetxController {
   void onInit() {
     super.onInit();
     _startWebSocketStream();
+    refreshAvailablePorts();
+    _fetchCameraInfo();
+    _startLineStatusPolling();
   }
 
   @override
@@ -59,76 +70,21 @@ class DashboardController extends GetxController {
 
   Future<void> refreshLiveFrame() async {
     await _pullLiveFrame();
-    await _pullLiveAnalysis();
+    // Không gọi _pullLiveAnalysis vì không detect liên tục
   }
 
   void _startWebSocketStream() {
     _stopWebSocketStream();
     if (!liveEnabled.value) return;
 
-    try {
-      _wsChannel = apiService.createVideoStreamChannel();
-      if (_wsChannel == null) {
-        _addLog('Không thể kết nối WebSocket, chuyển sang polling',
-            level: ActivityLogLevel.warning);
-        _startHttpPollingFallback();
-        return;
-      }
+    // Không dùng WebSocket nữa, chỉ dùng HTTP polling để có annotated frames
+    _addLog('Sử dụng HTTP polling cho stream (để hiển thị detection boxes)',
+        level: ActivityLogLevel.info);
+    _startHttpPollingFallback();
 
-      _wsSubscription = _wsChannel!.stream.listen(
-        (message) {
-          try {
-            final data = json.decode(message as String) as Map<String, dynamic>;
-            if (data['type'] == 'frame' && data['data'] != null) {
-              final frameBase64 = data['data'] as String;
-              final frameBytes = base64Decode(frameBase64);
-              liveFrame.value = Uint8List.fromList(frameBytes);
-              _liveWarningShown = false;
-            }
-          } catch (e) {
-            if (!_liveWarningShown) {
-              _addLog('Lỗi decode WebSocket frame: $e',
-                  level: ActivityLogLevel.warning);
-              _liveWarningShown = true;
-            }
-          }
-        },
-        onError: (error) {
-          if (!_liveWarningShown) {
-            _addLog('WebSocket lỗi: $error, fallback về polling',
-                level: ActivityLogLevel.warning);
-            _liveWarningShown = true;
-          }
-          _stopWebSocketStream();
-          _startHttpPollingFallback();
-        },
-        onDone: () {
-          if (liveEnabled.value) {
-            _addLog('WebSocket đóng, đang thử kết nối lại...',
-                level: ActivityLogLevel.warning);
-            _stopWebSocketStream();
-            Future.delayed(const Duration(seconds: 2), () {
-              if (liveEnabled.value) {
-                _startWebSocketStream();
-              }
-            });
-          }
-        },
-      );
-
-      _addLog('Đã kết nối WebSocket stream', level: ActivityLogLevel.success);
-    } catch (e) {
-      _addLog('Lỗi khởi tạo WebSocket: $e, fallback về polling',
-          level: ActivityLogLevel.warning);
-      _startHttpPollingFallback();
-    }
-
-    _analysisTimer?.cancel();
-    _analysisTimer =
-        Timer.periodic(const Duration(milliseconds: 600), (_) async {
-      await _pullLiveAnalysis();
-    });
-  }
+    // KHÔNG chạy analysis timer - chỉ detect khi có trigger (Arduino hoặc Test button)
+    // Kết quả detection sẽ tự động hiển thị qua line status polling
+  } 
 
   void _stopWebSocketStream() {
     _wsSubscription?.cancel();
@@ -141,8 +97,9 @@ class DashboardController extends GetxController {
   void _startHttpPollingFallback() {
     _liveTimer?.cancel();
     _liveTimer =
-        Timer.periodic(const Duration(milliseconds: 120), (_) async {
-      await _pullLiveFrame();
+        Timer.periodic(const Duration(milliseconds: 33), (_) {
+      // Không await để không block timer
+      _pullLiveFrame();
     });
   }
 
@@ -232,15 +189,106 @@ class DashboardController extends GetxController {
   }
 
   void _notify(String title, String message) {
-    if (Get.overlayContext != null) {
-      Get.snackbar(
-        title,
-        message,
-        snackPosition: SnackPosition.BOTTOM,
-        duration: const Duration(seconds: 3),
-      );
-    } else {
-      _addLog('$title: $message', level: ActivityLogLevel.info);
+    // Chỉ log, không dùng snackbar để tránh lỗi overlay
+    _addLog('$title: $message', level: ActivityLogLevel.info);
+  }
+
+  // ===== Control Panel Methods =====
+  
+  Future<void> triggerTestDetection() async {
+    if (isTestingDetection.value) return;
+    
+    isTestingDetection.value = true;
+    _addLog('Triggering manual detection test...', level: ActivityLogLevel.info);
+    
+    try {
+      await apiService.triggerTestDetection();
+      _addLog('Detection test triggered successfully', level: ActivityLogLevel.info);
+      _notify('Test Detection', 'Đã trigger detection, đợi kết quả...');
+      
+      // Đợi 2s rồi lấy kết quả từ line status
+      await Future.delayed(const Duration(seconds: 2));
+      
+      // Lấy kết quả detection
+      try {
+        final result = await apiService.getLastLineInference();
+        liveAnalysis.value = result;
+        _addLog('Detection result: ${result.isDefective ? "THIẾU" : "ĐỦ"} linh kiện', 
+            level: result.isDefective ? ActivityLogLevel.warning : ActivityLogLevel.success);
+      } catch (e) {
+        _addLog('Chưa có kết quả detection', level: ActivityLogLevel.warning);
+      }
+    } catch (e) {
+      _addLog('Test detection failed: $e', level: ActivityLogLevel.error);
+      _notify('Lỗi', 'Không thể trigger detection: $e');
+    } finally {
+      isTestingDetection.value = false;
     }
   }
+
+  Future<void> refreshAvailablePorts() async {
+    try {
+      final portsData = await apiService.getAvailablePorts();
+      availablePorts.value = List<String>.from(portsData['ports'] ?? []);
+      final current = portsData['current'] as String?;
+      if (current != null) {
+        selectedPort.value = current;
+      }
+      _addLog('Refreshed serial ports: ${availablePorts.length} found');
+    } catch (e) {
+      _addLog('Failed to refresh ports: $e', level: ActivityLogLevel.warning);
+    }
+  }
+
+  void selectPort(String port) {
+    selectedPort.value = port;
+    _addLog('Selected port: $port (Note: Restart backend to apply)', 
+        level: ActivityLogLevel.info);
+    _notify('Port Selected', 'Chọn $port. Restart backend với NANO_PORT=$port');
+  }
+
+  Future<void> switchCamera(int index) async {
+    try {
+      _addLog('Switching to camera $index...');
+      await apiService.switchCamera(index);
+      selectedCameraIndex.value = index;
+      _addLog('Switched to camera $index successfully', level: ActivityLogLevel.info);
+      _notify('Camera Switched', 'Đã chuyển sang camera $index');
+      await _fetchCameraInfo();
+      await refreshLiveFrame();
+    } catch (e) {
+      _addLog('Failed to switch camera: $e', level: ActivityLogLevel.error);
+      _notify('Lỗi', 'Không thể chuyển camera: $e');
+    }
+  }
+
+  Future<void> _fetchCameraInfo() async {
+    try {
+      final info = await apiService.getCameraInfo();
+      selectedCameraIndex.value = info['camera_index'] as int? ?? 4;
+      isCameraOpened.value = info['is_opened'] as bool? ?? false;
+    } catch (e) {
+      _addLog('Failed to fetch camera info: $e', level: ActivityLogLevel.warning);
+    }
+  }
+
+  void _startLineStatusPolling() {
+    Timer.periodic(const Duration(seconds: 2), (timer) async {
+      if (!liveEnabled.value) return;
+      
+      try {
+        final status = await apiService.getLineStatus();
+        lineStatus.value = status;
+        
+        // Update last inference if available
+        final lastInf = status['lastInference'];
+        if (lastInf != null) {
+          liveAnalysis.value = InferenceResult.fromJson(lastInf as Map<String, dynamic>);
+        }
+      } catch (e) {
+        // Silent fail, không spam logs
+      }
+    });
+  }
 }
+

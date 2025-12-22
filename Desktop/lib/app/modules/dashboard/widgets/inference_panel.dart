@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -63,7 +65,11 @@ class InferencePanel extends StatelessWidget {
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (imagePath != null) ...[
+                  // Ưu tiên annotatedImage từ backend (đã xoay + vẽ boxes)
+                  if (result.annotatedImage != null) ...[
+                    _AnnotatedImage(base64Image: result.annotatedImage!),
+                    const SizedBox(height: 16),
+                  ] else if (imagePath != null) ...[
                     _ImageWithBoundingBoxes(
                       imagePath: imagePath,
                       result: result,
@@ -337,6 +343,36 @@ class _InferenceSummary extends StatelessWidget {
             child: Text(result.notes!),
           ),
       ],
+    );
+  }
+}
+class _AnnotatedImage extends StatelessWidget {
+  const _AnnotatedImage({required this.base64Image});
+
+  final String base64Image;
+
+  @override
+  Widget build(BuildContext context) {
+    final imageBytes = base64Decode(base64Image);
+    
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        constraints: const BoxConstraints(maxHeight: 600),
+        child: Image.memory(
+          imageBytes,
+          fit: BoxFit.contain,
+          errorBuilder: (context, error, stackTrace) {
+            return Container(
+              height: 200,
+              color: Colors.red.shade100,
+              child: Center(
+                child: Text('Lỗi hiển thị ảnh: $error'),
+              ),
+            );
+          },
+        ),
+      ),
     );
   }
 }
