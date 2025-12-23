@@ -62,7 +62,8 @@ class TrainingService:
             ref_sample = next((s for s in samples if s.label == 'ok'), samples[0])
             ref_path = Path(ref_sample.path)
             
-            img = cv2.imread(str(ref_path))
+            from ..utils.image_processing import preprocess_image_from_path
+            img = preprocess_image_from_path(ref_path)
             if img is None:
                 raise ValueError(f"Không đọc được ảnh tại {ref_path}")
 

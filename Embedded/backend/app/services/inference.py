@@ -2,7 +2,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional
 
 import cv2
 import numpy as np
@@ -16,9 +16,10 @@ class InferenceService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         
-        # Load Model YOLO
+        # Load Model YOLO (Logic giống collab: load best.pt)
         self.model_path = settings.artifacts_dir / "best.pt"
         if not self.model_path.exists():
+             print("Warning: best.pt not found, using yolov8n.pt fallback")
              self.model = YOLO("yolov8n.pt") 
         else:
              self.model = YOLO(str(self.model_path))
@@ -28,11 +29,11 @@ class InferenceService:
         self._ref_image_cache: Optional[np.ndarray] = None
         
         self._sift = cv2.SIFT_create()
-        self._ref_kp = None  # Keypoints của ảnh gốc
-        self._ref_des = None # Descriptors của ảnh gốc
+        self._ref_kp = None 
+        self._ref_des = None 
 
     def _create_pcb_mask(self, img: np.ndarray) -> np.ndarray:
-        """Tạo mask lọc nền (Chỉ giữ lại mạch xanh dương)."""
+        """Logic tạo mask giữ nguyên từ collab.py"""
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         lower_blue = np.array([90, 50, 50])
         upper_blue = np.array([130, 255, 255])
@@ -43,10 +44,11 @@ class InferenceService:
         return cv2.morphologyEx(mask, cv2.MORPH_DILATE, kernel)
 
     def _load_active_profile(self) -> None:
-        """Load profile và tính toán trước SIFT keypoints cho ảnh chuẩn."""
+        """Load profile và cache SIFT keypoints"""
         try:
             active_file = self._settings.artifacts_dir / "active_profile.txt"
             if not active_file.exists():
+                # Fallback nếu không có file active, lấy file json đầu tiên
                 json_files = list((self._settings.artifacts_dir / "templates").glob("*.json"))
                 if not json_files: return
                 profile_name = json_files[0].stem
@@ -63,12 +65,14 @@ class InferenceService:
                 if ref_path.exists():
                     self._ref_image_cache = cv2.imread(str(ref_path))
                     
+                    # Pre-calculate SIFT for reference image
                     mask_ref = self._create_pcb_mask(self._ref_image_cache)
                     gray_ref = cv2.cvtColor(self._ref_image_cache, cv2.COLOR_BGR2GRAY)
                     self._ref_kp, self._ref_des = self._sift.detectAndCompute(gray_ref, mask_ref)
+                    print(f"InferenceService: Loaded profile '{profile_name}'")
                     
         except Exception as e:
-            print(f"Lỗi load profile: {e}")
+            print(f"Error loading profile: {e}")
 
     async def run(self, upload: UploadFile) -> InferenceResponse:
         contents = await upload.read()
@@ -77,26 +81,28 @@ class InferenceService:
         return self._analyze(img)
 
     async def analyze_bytes(self, data: bytes) -> InferenceResponse:
-        
-        from ..utils.image_processing import preprocess_image_from_bytes
-        img = preprocess_image_from_bytes(data)
+        nparr = np.frombuffer(data, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         return self._analyze(img)
 
     def _align_image(self, target_img: np.ndarray) -> np.ndarray:
-        """Căn chỉnh ảnh dùng Affine Partial + Masking."""
+        """
+        Logic Align giữ nguyên từ collab.py: 
+        Rotation check -> SIFT -> Affine Partial
+        """
         if self._ref_image_cache is None or self._ref_des is None: 
             return target_img
             
         h_ref, w_ref = self._ref_image_cache.shape[:2]
         h_tgt, w_tgt = target_img.shape[:2]
         
-        # 1. Xoay thô nếu ngược chiều
+        # 1. Rotation logic
         if (w_ref > h_ref) and (h_tgt > w_tgt):
             target_img = cv2.rotate(target_img, cv2.ROTATE_90_CLOCKWISE)
         elif (h_ref > w_ref) and (w_tgt > h_tgt):
             target_img = cv2.rotate(target_img, cv2.ROTATE_90_CLOCKWISE)
 
-        # 2. SIFT Matching với Mask
+        # 2. SIFT Matching
         mask_tgt = self._create_pcb_mask(target_img)
         gray_tgt = cv2.cvtColor(target_img, cv2.COLOR_BGR2GRAY)
         kp2, des2 = self._sift.detectAndCompute(gray_tgt, mask_tgt)
@@ -113,7 +119,7 @@ class InferenceService:
             src_pts = np.float32([self._ref_kp[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
             dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
             
-            # 3. Affine Partial:  Rotation + Translation + Scale 
+            # 3. Affine Partial (Xoay + Dịch + Scale)
             M, inliers = cv2.estimateAffinePartial2D(dst_pts, src_pts)
             if M is not None:
                 return cv2.warpAffine(target_img, M, (w_ref, h_ref), flags=cv2.INTER_CUBIC)
@@ -121,10 +127,11 @@ class InferenceService:
         return target_img
 
     def _calculate_iou(self, box1: List[float], box2: List[float]) -> float:
-        """Tính IoU giữa 2 box (xywh normalized)."""
-        # box: [x_center, y_center, w, h] -> convert to x1, y1, x2, y2
+        """Logic tính IoU giữ nguyên từ collab.py"""
+        # box: [x_center, y_center, w, h]
         b1_x1, b1_y1 = box1[0] - box1[2]/2, box1[1] - box1[3]/2
         b1_x2, b1_y2 = box1[0] + box1[2]/2, box1[1] + box1[3]/2
+        
         b2_x1, b2_y1 = box2[0] - box2[2]/2, box2[1] - box2[3]/2
         b2_x2, b2_y2 = box2[0] + box2[2]/2, box2[1] + box2[3]/2
 
@@ -134,13 +141,15 @@ class InferenceService:
         y_bottom = min(b1_y2, b2_y2)
 
         if x_right < x_left or y_bottom < y_top: return 0.0
+        
         intersection_area = (x_right - x_left) * (y_bottom - y_top)
         b1_area = (b1_x2 - b1_x1) * (b1_y2 - b1_y1)
         b2_area = (b2_x2 - b2_x1) * (b2_y2 - b2_y1)
+        
         return intersection_area / float(b1_area + b2_area - intersection_area)
 
     def _verify_visual(self, aligned_img: np.ndarray, box_norm: List[float]) -> float:
-        """So khớp hình ảnh (Template Matching) tại vị trí box."""
+        """Logic Template Matching giữ nguyên từ collab.py"""
         h, w = aligned_img.shape[:2]
         cx, cy, bw, bh = box_norm
         x1 = max(0, int((cx - bw/2) * w))
@@ -159,19 +168,25 @@ class InferenceService:
         except: return 0.0
 
     def _analyze(self, image: np.ndarray) -> InferenceResponse:
+        """
+        Hàm chính thực hiện logic phân tích.
+        Sử dụng logic 'Local Greedy' và các ngưỡng từ collab.py.
+        """
+        # Reload profile if needed
         if self._current_profile is None:
             self._load_active_profile()
             
         if self._current_profile is None or self._ref_image_cache is None:
              return InferenceResponse(
                  isDefective=False, confidence=0.0, timestamp=datetime.utcnow(), 
-                 boardName="Chưa Train Mạch", notes="Vui lòng train mạch trước."
+                 boardName="Unknown", notes="Chưa có profile nào được train."
              )
 
         # 1. Alignment
         aligned_img = self._align_image(image)
+        h, w = aligned_img.shape[:2]
 
-        # 2. Detect: Lấy tất cả box 
+        # 2. Detect YOLO
         results = self.model(aligned_img, verbose=False, conf=0.25)
         
         detected_candidates = []
@@ -184,73 +199,82 @@ class InferenceService:
                     'is_used': False
                 })
 
-        # 3. GLOBAL MATCHING LOGIC 
-        potential_matches = []
+        # 3. MATCHING LOGIC
+        missing_areas = []
+        total_comps = len(self._current_profile.components)
+        
+        # Duyệt qua từng linh kiện mẫu (Template)
         for temp_comp in self._current_profile.components:
             tx, ty, tw, th = temp_comp.box
             
+            matched_candidate = None
+            best_score = -999
+
             for candidate in detected_candidates:
+                if candidate['is_used']:
+                    continue
+
                 iou = self._calculate_iou(temp_comp.box, candidate['box'])
                 dx, dy, _, _ = candidate['box']
                 dist = np.sqrt((tx - dx)**2 + (ty - dy)**2)
 
-                if iou > 0.01 or dist < 0.06:
-                    score = iou + (1.0 - dist) 
-                    potential_matches.append({
-                        'comp_id': temp_comp.id,
-                        'comp_box': temp_comp.box,
-                        'cand_idx': candidate['id'],
-                        'cand_item': candidate,
-                        'score': score
-                    })
+                # ĐIỀU KIỆN KHỚP 
+                is_match = (iou > 0.01) or (dist < 0.06)
 
-        potential_matches.sort(key=lambda x: x['score'], reverse=True)
-        
-        matched_results = {} 
-        comp_used = set()
-        
-        for match in potential_matches:
-            c_id = match['comp_id']
-            cand_item = match['cand_item']
+                if is_match:
+                    score = iou + (1.0 - dist)
+                    if score > best_score:
+                        best_score = score
+                        matched_candidate = candidate
+
+            # Kiểm tra kết quả khớp
+            yolo_found = False
+            if matched_candidate:
+                yolo_found = True
+                matched_candidate['is_used'] = True 
             
-            if c_id in comp_used or cand_item['is_used']:
-                continue
+            is_present = False
             
-            matched_results[c_id] = match
-            cand_item['is_used'] = True
-            comp_used.add(c_id)
-
-        missing_areas = []
-        
-        for temp_comp in self._current_profile.components:
-            if temp_comp.id in matched_results:
-                match = matched_results[temp_comp.id]
-                candidate = match['cand_item']
+            if yolo_found:
+                matched_box = matched_candidate['box']
+                matched_conf = matched_candidate['conf']
                 
-                vis_score = self._verify_visual(aligned_img, candidate['box'])
-                conf = candidate['conf']
+                # Verify Visual
+                vis_score = self._verify_visual(aligned_img, matched_box)
 
-                is_present = (vis_score > 0.15) or (conf > 0.30)
+                # LOGIC PHÁN ĐOÁN 
+                if vis_score > 0.15:
+                    is_present = True # OK
+                elif matched_conf > 0.3: 
+                    is_present = True # OK
+                else:
+                    is_present = False 
+
+            # Xử lý kết quả để trả về API
+            if yolo_found and is_present:
+
+                pass
+            
+            elif yolo_found and not is_present:
                 
-                if not is_present:
-                    tx, ty, tw, th = temp_comp.box
-                    missing_areas.append(MissingArea(
-                        id=f"wrong_{temp_comp.id}",
-                        description=f"FALSE?",
-                        confidence=conf,
-                        bbox=BoundingBox(x=tx - tw/2, y=ty - th/2, width=tw, height=th)
-                    ))
+                missing_areas.append(MissingArea(
+                    id=f"bad_{temp_comp.id}",
+                    description="Lỗi/Sai linh kiện",
+                    confidence=matched_candidate['conf'],
+                    bbox=BoundingBox(x=tx - tw/2, y=ty - th/2, width=tw, height=th)
+                ))
+            
             else:
-                tx, ty, tw, th = temp_comp.box
+                # MISSING
                 missing_areas.append(MissingArea(
                     id=f"missing_{temp_comp.id}",
-                    description="MISSING",
+                    description="Thiếu linh kiện",
                     confidence=1.0,
                     bbox=BoundingBox(x=tx - tw/2, y=ty - th/2, width=tw, height=th)
                 ))
 
+        # Tổng hợp kết quả
         is_defective = len(missing_areas) > 0
-        total_comps = len(self._current_profile.components)
         found_comps = total_comps - len(missing_areas)
 
         return InferenceResponse(
@@ -259,5 +283,5 @@ class InferenceService:
             timestamp=datetime.utcnow(),
             boardName=self._current_profile.boardName,
             missingAreas=missing_areas,
-            notes=f"Kiểm tra: {found_comps}/{total_comps} linh kiện. (Matches: {len(matched_results)})"
+            notes=f"Đã kiểm tra: {found_comps}/{total_comps} linh kiện."
         )
