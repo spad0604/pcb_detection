@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from .core.config import get_settings
 from .services.camera_service import CameraService
-from .services.inference_service import InferenceService
+from .services.inference import InferenceService
 from .services.line_controller import LineController
 
 logging.basicConfig(level=logging.INFO)

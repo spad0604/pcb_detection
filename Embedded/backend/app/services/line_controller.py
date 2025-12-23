@@ -14,7 +14,7 @@ from serial import SerialException
 
 from ..models.dto import InferenceResponse
 from .camera_service import CameraService
-from .inference_service import InferenceService
+from .inference import InferenceService
 
 logger = logging.getLogger(__name__)
 
