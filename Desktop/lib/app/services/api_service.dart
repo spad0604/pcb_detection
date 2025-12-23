@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/inference_result.dart';
+import '../models/line_snapshot.dart';
 
 class ApiService {
   ApiService({Dio? dio, this.baseUrl = 'http://127.0.0.1:8000'})
@@ -40,10 +41,8 @@ class ApiService {
 
   Future<Uint8List?> fetchLiveFrame() async {
     try {
-      // Dùng /api/stream/annotated để có detection boxes khi có (TTL 5s)
-      // Sau đó tự động fallback về raw stream
       final response = await _dio.get<List<int>>(
-        '/api/stream/annotated',
+        '/api/stream/frame',
         options: Options(
           responseType: ResponseType.bytes,
           receiveTimeout: const Duration(milliseconds: 2000),
@@ -156,6 +155,23 @@ class ApiService {
       }
       return InferenceResult.fromJson(response.data!);
     } on DioException catch (error) {
+      final detail = error.response?.data?['detail'] as String?;
+      throw ApiException(detail ?? _describe(error));
+    }
+  }
+
+  Future<LineSnapshot?> getLastLineSnapshot() async {
+    try {
+      final response = await _dio.get<Map<String, dynamic>>('/api/line/last_snapshot');
+      final data = response.data;
+      if (data == null) {
+        return null;
+      }
+      return LineSnapshot.fromJson(data);
+    } on DioException catch (error) {
+      if (error.response?.statusCode == 404) {
+        return null;
+      }
       final detail = error.response?.data?['detail'] as String?;
       throw ApiException(detail ?? _describe(error));
     }

@@ -11,3 +11,4 @@ opencv-python==4.10.0.84
 ultralytics
 opencv-python-headless
 pyserial
+cloudinary==1.41.0

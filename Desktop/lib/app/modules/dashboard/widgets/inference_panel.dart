@@ -1,7 +1,5 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -66,8 +64,8 @@ class InferencePanel extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // Ưu tiên annotatedImage từ backend (đã xoay + vẽ boxes)
-                  if (result.annotatedImage != null) ...[
-                    _AnnotatedImage(base64Image: result.annotatedImage!),
+                  if (result.annotatedImageUrl != null) ...[
+                    _AnnotatedImage(imageUrl: result.annotatedImageUrl!),
                     const SizedBox(height: 16),
                   ] else if (imagePath != null) ...[
                     _ImageWithBoundingBoxes(
@@ -347,21 +345,31 @@ class _InferenceSummary extends StatelessWidget {
   }
 }
 class _AnnotatedImage extends StatelessWidget {
-  const _AnnotatedImage({required this.base64Image});
+  const _AnnotatedImage({required this.imageUrl});
 
-  final String base64Image;
+  final String imageUrl;
 
   @override
   Widget build(BuildContext context) {
-    final imageBytes = base64Decode(base64Image);
-    
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: Container(
         constraints: const BoxConstraints(maxHeight: 600),
-        child: Image.memory(
-          imageBytes,
+        color: Colors.black12,
+        child: Image.network(
+          imageUrl,
           fit: BoxFit.contain,
+          loadingBuilder: (context, child, loadingProgress) {
+            if (loadingProgress == null) return child;
+            return Center(
+              child: CircularProgressIndicator(
+                value: loadingProgress.expectedTotalBytes != null
+                    ? loadingProgress.cumulativeBytesLoaded /
+                        loadingProgress.expectedTotalBytes!
+                    : null,
+              ),
+            );
+          },
           errorBuilder: (context, error, stackTrace) {
             return Container(
               height: 200,

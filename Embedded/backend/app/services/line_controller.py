@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from typing import Any
 
 import cv2
@@ -44,8 +45,9 @@ class LineController:
         self.last_status_raw: str | None = None
         self.last_result: InferenceResponse | None = None
         self.last_annotated_frame: bytes | None = None
+        self.last_annotated_url: str | None = None
         self.annotated_frame_timestamp: float = 0.0  # Timestamp khi có detection
-        self.annotated_frame_ttl: float = 5.0  # Hiển thị 5 giây rồi clear
+        self.frame_sample_count = 3
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -101,19 +103,34 @@ class LineController:
         return self.last_result
 
     def get_annotated_frame(self) -> bytes | None:
-        """Trả về frame đã vẽ bounding boxes (TTL 5s sau detection)."""
-        import time
-        
-        # Kiểm tra xem annotated frame có còn hiệu lực không
-        if self.last_annotated_frame:
-            elapsed = time.time() - self.annotated_frame_timestamp
-            if elapsed < self.annotated_frame_ttl:
-                return self.last_annotated_frame
-            else:
-                # Hết hạn, clear để quay về raw stream
-                self.last_annotated_frame = None
-        
-        return None
+        """Trả về frame đã vẽ bounding boxes mới nhất (nếu có)."""
+        with self._lock:
+            return self.last_annotated_frame
+
+    def get_last_snapshot(self) -> dict[str, Any] | None:
+        """Lấy snapshot detection mới nhất gồm ảnh + kết quả."""
+        with self._lock:
+            if not self.last_result and not self.last_annotated_frame:
+                return None
+            return {
+                "result": self.last_result,
+                "frame": self.last_annotated_frame,
+                "frameUrl": self.last_annotated_url,
+                "timestamp": self.annotated_frame_timestamp,
+            }
+
+    def update_last_detection(
+        self,
+        result: InferenceResponse,
+        annotated_frame: bytes | None,
+        annotated_url: str | None,
+    ) -> None:
+        """Cập nhật cache kết quả detection gần nhất để FE đọc lại."""
+        with self._lock:
+            self.last_result = result
+            self.last_annotated_frame = annotated_frame
+            self.last_annotated_url = annotated_url
+            self.annotated_frame_timestamp = time.time()
 
     def trigger_manual_detection(self) -> bool:
         """Trigger detection thủ công từ UI (giả lập EVENT:BOARD_AT_CAMERA)."""
@@ -218,37 +235,42 @@ class LineController:
         future.add_done_callback(lambda _: None)
 
     async def _auto_detect(self) -> None:
-        import time
-        
         try:
-            # Lấy RAW frame (numpy array BGR) thay vì JPEG bytes
-            img = await asyncio.to_thread(self.camera_service.get_raw_frame)
-            if img is None:
+            # Lấy nhiều RAW frame rồi chọn frame có nhiều keypoints nhất
+            best_frame: np.ndarray | None = None
+            best_score = -1
+            for idx in range(self.frame_sample_count):
+                img = await asyncio.to_thread(self.camera_service.get_raw_frame)
+                if img is None:
+                    continue
+                score = self.inference_service.estimate_frame_quality(img)
+                logger.info("Frame sample %d có %d keypoints", idx + 1, score)
+                if score > best_score:
+                    best_score = score
+                    best_frame = img
+                await asyncio.sleep(0.03)
+
+            if best_frame is None:
                 logger.warning("Không có frame camera để detect")
                 self.send_command("CMD:RESULT:NG")
                 return
-            
-            logger.info(f"Camera frame shape: {img.shape}")
+
+            h, w = best_frame.shape[:2]
+            logger.info("Camera frame shape: %dx%d, keypoints=%d", w, h, best_score)
             # Lưu frame gốc để debug
             try:
-                cv2.imwrite("/tmp/pcb_capture_raw.jpg", img)
+                cv2.imwrite("/tmp/pcb_capture_raw.jpg", best_frame)
                 logger.info("Đã lưu ảnh gốc: /tmp/pcb_capture_raw.jpg")
             except Exception as e:
                 logger.warning(f"Không lưu được ảnh gốc: {e}")
             
             # Phân tích trực tiếp từ numpy array (không encode/decode JPEG)
-            result = await self.inference_service.analyze_image(img)
-            self.last_result = result
-            
-            # Vẽ bounding boxes lên frame
-            self.last_annotated_frame = await asyncio.to_thread(
-                self.inference_service.draw_detection_boxes, img, result
-            )
-            self.annotated_frame_timestamp = time.time()  # Set timestamp
+            result, annotated_frame, annotated_url = await self.inference_service.analyze_and_render(best_frame)
+            self.update_last_detection(result, annotated_frame, annotated_url)
             # Lưu ảnh annotated để xem lại
             try:
-                if self.last_annotated_frame:
-                    cv_img = cv2.imdecode(np.frombuffer(self.last_annotated_frame, np.uint8), cv2.IMREAD_COLOR)
+                if annotated_frame:
+                    cv_img = cv2.imdecode(np.frombuffer(annotated_frame, np.uint8), cv2.IMREAD_COLOR)
                     if cv_img is not None:
                         cv2.imwrite("/tmp/pcb_capture_annotated.jpg", cv_img)
                         logger.info("Đã lưu ảnh annotated: /tmp/pcb_capture_annotated.jpg")

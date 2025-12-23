@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import 'dashboard_controller.dart';
-import 'widgets/activity_log_panel.dart';
 import 'widgets/control_panel.dart';
 import 'widgets/inference_panel.dart';
+import 'widgets/live_detection_panel.dart';
 import 'widgets/video_stream_panel.dart';
 
 class DashboardView extends GetView<DashboardController> {
@@ -41,7 +41,7 @@ class DashboardView extends GetView<DashboardController> {
                       const SizedBox(height: 16),
                       InferencePanel(controller: controller),
                       const SizedBox(height: 16),
-                      ActivityLogPanel(controller: controller),
+                      LiveDetectionPanel(controller: controller),
                     ],
                   ),
                 )
@@ -70,7 +70,7 @@ class DashboardView extends GetView<DashboardController> {
                             children: [
                               ControlPanel(),
                               const SizedBox(height: 16),
-                              ActivityLogPanel(controller: controller),
+                              LiveDetectionPanel(controller: controller),
                             ],
                           ),
                         ),

@@ -10,6 +10,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../models/activity_log_entry.dart';
 import '../../models/inference_result.dart';
+import '../../models/line_snapshot.dart';
 import '../../services/api_service.dart';
 
 class DashboardController extends GetxController {
@@ -23,6 +24,7 @@ class DashboardController extends GetxController {
   final RxnString lastInferenceImagePath = RxnString();
   final Rxn<InferenceResult> liveAnalysis = Rxn<InferenceResult>();
   final Rxn<Uint8List> liveFrame = Rxn<Uint8List>();
+  final Rxn<LineSnapshot> lastLineSnapshot = Rxn<LineSnapshot>();
   final liveEnabled = true.obs;
 
   // Control panel state
@@ -35,6 +37,7 @@ class DashboardController extends GetxController {
 
   Timer? _liveTimer;
   Timer? _analysisTimer;
+  Timer? _statusTimer;
   WebSocketChannel? _wsChannel;
   StreamSubscription? _wsSubscription;
   bool _liveWarningShown = false;
@@ -47,12 +50,14 @@ class DashboardController extends GetxController {
     refreshAvailablePorts();
     _fetchCameraInfo();
     _startLineStatusPolling();
+    _fetchLatestSnapshot();
   }
 
   @override
   void onClose() {
     _liveTimer?.cancel();
     _analysisTimer?.cancel();
+    _statusTimer?.cancel();
     _wsSubscription?.cancel();
     _wsChannel?.sink.close();
     super.onClose();
@@ -119,6 +124,21 @@ class DashboardController extends GetxController {
         _addLog('Stream lỗi: $error', level: ActivityLogLevel.error);
         _liveWarningShown = true;
       }
+    }
+  }
+
+  Future<void> _fetchLatestSnapshot() async {
+    try {
+      final snapshot = await apiService.getLastLineSnapshot();
+      if (snapshot == null) {
+        return;
+      }
+      lastLineSnapshot.value = snapshot;
+      if (snapshot.inference != null) {
+        liveAnalysis.value = snapshot.inference;
+      }
+    } catch (_) {
+      // Silent fail để tránh spam log UI
     }
   }
 
@@ -215,6 +235,7 @@ class DashboardController extends GetxController {
         liveAnalysis.value = result;
         _addLog('Detection result: ${result.isDefective ? "THIẾU" : "ĐỦ"} linh kiện', 
             level: result.isDefective ? ActivityLogLevel.warning : ActivityLogLevel.success);
+        await _fetchLatestSnapshot();
       } catch (e) {
         _addLog('Chưa có kết quả detection', level: ActivityLogLevel.warning);
       }
@@ -273,7 +294,8 @@ class DashboardController extends GetxController {
   }
 
   void _startLineStatusPolling() {
-    Timer.periodic(const Duration(seconds: 2), (timer) async {
+    _statusTimer?.cancel();
+    _statusTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
       if (!liveEnabled.value) return;
       
       try {
@@ -288,6 +310,8 @@ class DashboardController extends GetxController {
       } catch (e) {
         // Silent fail, không spam logs
       }
+
+      await _fetchLatestSnapshot();
     });
   }
 }

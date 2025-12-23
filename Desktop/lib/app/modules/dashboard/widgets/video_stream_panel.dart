@@ -141,61 +141,11 @@ class _VideoCanvas extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final boxes = analysis?.missingAreas ?? [];
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            Image.memory(
-              frame,
-              gaplessPlayback: true,
-              fit: BoxFit.cover,
-            ),
-            for (final area in boxes)
-              if (area.bbox != null)
-                Positioned(
-                  left: area.bbox!.x * constraints.maxWidth,
-                  top: area.bbox!.y * constraints.maxHeight,
-                  width: area.bbox!.width * constraints.maxWidth,
-                  height: area.bbox!.height * constraints.maxHeight,
-                  child: IgnorePointer(
-                    child: Container(
-                      decoration: BoxDecoration(
-                        border: Border.all(
-                          color: Colors.redAccent.withOpacity(0.8),
-                          width: 2,
-                        ),
-                        borderRadius: BorderRadius.circular(6),
-                        color: Colors.redAccent.withOpacity(0.12),
-                      ),
-                      child: Align(
-                        alignment: Alignment.topLeft,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: Colors.redAccent,
-                            borderRadius: const BorderRadius.only(
-                              topLeft: Radius.circular(4),
-                              bottomRight: Radius.circular(6),
-                            ),
-                          ),
-                          child: Text(
-                            area.id,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-          ],
-        );
-      },
+    // Camera stream luôn hiển thị raw frame; boxes nằm ở panel kết quả riêng
+    return Image.memory(
+      frame,
+      gaplessPlayback: true,
+      fit: BoxFit.cover,
     );
   }
 }

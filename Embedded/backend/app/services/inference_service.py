@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import os
 from datetime import datetime
 import logging
 from pathlib import Path
@@ -9,6 +10,12 @@ import cv2
 import numpy as np
 from fastapi import UploadFile
 from ultralytics import YOLO
+
+try:
+    import cloudinary
+    import cloudinary.uploader
+except Exception:  # pragma: no cover - optional dependency fallback
+    cloudinary = None
 
 from ..core.config import Settings
 from ..models.dto import BoundingBox, InferenceResponse, MissingArea, BoardProfile
@@ -31,6 +38,20 @@ class InferenceService:
         else:
             logger.info(f"✓ Đã load model YOLO từ: {self.model_path}")
             self.model = YOLO(str(self.model_path))
+        
+        # Configure Cloudinary uploads
+        self._cloudinary_enabled = False
+        self._cloudinary_folder = os.getenv("CLOUDINARY_FOLDER", "pcb-inspector")
+        cloudinary_url = os.getenv("CLOUDINARY_URL")
+        if cloudinary_url and cloudinary is not None:
+            try:
+                cloudinary.config(cloudinary_url=cloudinary_url)
+                self._cloudinary_enabled = True
+                logger.info("✓ Upload annotated image lên Cloudinary được bật")
+            except Exception as exc:
+                logger.warning("Không cấu hình Cloudinary: %s", exc)
+        elif cloudinary_url and cloudinary is None:
+            logger.warning("Đã đặt CLOUDINARY_URL nhưng chưa cài thư viện cloudinary")
              
         # Cache profile & SIFT data
         self._current_profile: Optional[BoardProfile] = None
@@ -51,6 +72,32 @@ class InferenceService:
         kernel = np.ones((5, 5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         return cv2.morphologyEx(mask, cv2.MORPH_DILATE, kernel)
+
+    def _upload_annotated_image(self, image_bytes: bytes | None) -> Optional[str]:
+        if not image_bytes or not self._cloudinary_enabled:
+            return None
+        try:
+            response = cloudinary.uploader.upload(
+                image_bytes,
+                folder=self._cloudinary_folder,
+                resource_type="image",
+                overwrite=True,
+            )
+            return response.get("secure_url") or response.get("url")
+        except Exception as exc:
+            logger.warning(f"Upload annotated image thất bại: {exc}")
+            return None
+
+    def estimate_frame_quality(self, img: np.ndarray) -> int:
+        """Trả về số keypoints SIFT (dùng để chọn frame camera tốt nhất)."""
+        try:
+            mask = self._create_pcb_mask(img)
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            kp, _ = self._sift.detectAndCompute(gray, mask)
+            return len(kp) if kp is not None else 0
+        except Exception as exc:
+            logger.warning(f"Không đo được quality frame: {exc}")
+            return 0
 
     def _load_active_profile(self) -> None:
         """Load profile và tính toán trước SIFT keypoints cho ảnh chuẩn."""
@@ -94,6 +141,16 @@ class InferenceService:
     async def analyze_image(self, img: np.ndarray) -> InferenceResponse:
         """API wrapper: Phân tích từ numpy array BGR (cho camera raw frame)."""
         return self._analyze(img)
+
+    async def analyze_and_render(
+        self, img: np.ndarray
+    ) -> Tuple[InferenceResponse, Optional[bytes], Optional[str]]:
+        """Chạy inference + render boxes + upload annotated image."""
+        result = await self.analyze_image(img)
+        annotated = self.draw_detection_boxes(img, result)
+        annotated_bytes = annotated if annotated else None
+        annotated_url = self._upload_annotated_image(annotated_bytes)
+        return result, annotated_bytes, annotated_url
 
     def draw_detection_boxes(self, img: np.ndarray, result: InferenceResponse) -> bytes:
         """API wrapper: Vẽ bounding boxes lên ảnh và trả về JPEG bytes."""
@@ -291,6 +348,7 @@ class InferenceService:
         
         for temp_comp in self._current_profile.components:
             if temp_comp.id in matched_results:
+                # Component đã được detect và match với template
                 match = matched_results[temp_comp.id]
                 candidate = match['cand_item']
                 
@@ -299,20 +357,17 @@ class InferenceService:
 
                 is_present = (vis_score > 0.15) or (conf > 0.30)
                 
+                # Nếu detect được thì KHÔNG thêm vào missing (dù confidence thấp)
+                # Chỉ log cảnh báo nếu confidence yếu
                 if not is_present:
-                    tx, ty, tw, th = temp_comp.box
-                    missing_areas.append(MissingArea(
-                        id=f"wrong_{temp_comp.id}",
-                        description="",
-                        confidence=conf,
-                        bbox=BoundingBox(x=tx - tw/2, y=ty - th/2, width=tw, height=th)
-                    ))
+                    logger.warning(f"Component {temp_comp.id} có confidence thấp: {conf:.2f}, vis_score: {vis_score:.2f}")
             else:
+                # Component KHÔNG được detect → THIẾU
                 tx, ty, tw, th = temp_comp.box
                 missing_areas.append(MissingArea(
                     id=f"missing_{temp_comp.id}",
-                    description="",
-                    confidence=1.0,
+                    description=temp_comp.label if hasattr(temp_comp, 'label') else "",
+                    confidence=1.0,  # Chắc chắn thiếu vì không detect được
                     bbox=BoundingBox(x=tx - tw/2, y=ty - th/2, width=tw, height=th)
                 ))
 

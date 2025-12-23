@@ -5,6 +5,7 @@ import os
 import json
 import logging
 import base64
+from datetime import datetime
 
 import cv2
 import numpy as np
@@ -36,6 +37,12 @@ else:
 line_controller = LineController(camera_service, inference_service)
 
 app = FastAPI(title="PCB Inspector API (YOLO + SIFT)", version="2.0.0")
+
+
+def _format_inference_response(result, annotated_url):
+  response = result.dict()
+  response["annotatedImageUrl"] = annotated_url
+  return response
 
 app.add_middleware(
     CORSMiddleware,
@@ -69,16 +76,8 @@ async def run_inference(file: UploadFile = File(...)) -> dict:
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     
     # Phân tích từ numpy array (không dùng file.read() nữa)
-    result = await inference_service.analyze_image(img)
-    
-    # Vẽ bounding boxes lên ảnh
-    annotated_bytes = inference_service.draw_detection_boxes(img, result)
-    annotated_base64 = base64.b64encode(annotated_bytes).decode('utf-8') if annotated_bytes else None
-    
-    # Trả về JSON + ảnh đã vẽ boxes (base64)
-    response = result.dict()
-    response['annotatedImage'] = annotated_base64
-    return response
+    result, annotated_bytes, annotated_url = await inference_service.analyze_and_render(img)
+    return _format_inference_response(result, annotated_url)
 
 
 @app.get("/api/stream/frame")
@@ -96,24 +95,19 @@ async def get_stream_frame() -> Response:
 
 @app.get("/api/stream/annotated")
 async def get_annotated_frame() -> Response:
-  """Lấy frame có bounding boxes (detection result)."""
-  annotated = line_controller.get_annotated_frame()
+  """Trả về ảnh snapshot detection mới nhất (không ảnh thì trả placeholder)."""
+  snapshot = line_controller.get_last_snapshot()
+  annotated = snapshot["frame"] if snapshot else None
   if annotated:
     return Response(content=annotated, media_type="image/jpeg")
-  
-  # Fallback về raw frame nếu chưa có detection
-  frame = camera_service.get_frame()
-  if frame:
-    return Response(content=frame, media_type="image/jpeg")
-  
-  # Placeholder cuối cùng
+
   frame = camera_service.get_placeholder_frame()
   return Response(content=frame, media_type="image/jpeg")
 
 
 @app.get("/api/stream/mjpeg")
 async def get_mjpeg_stream(request: Request) -> StreamingResponse:
-  """MJPEG stream endpoint - stream video mượt hơn, ưu tiên annotated frame."""
+  """MJPEG stream endpoint - stream video mượt từ camera (raw)."""
   async def generate_frames():
     try:
       while True:
@@ -121,12 +115,7 @@ async def get_mjpeg_stream(request: Request) -> StreamingResponse:
         if await request.is_disconnected():
           break
         
-        # Ưu tiên frame đã vẽ boxes từ line controller
-        frame = line_controller.get_annotated_frame()
-        
-        if not frame:
-          # Fallback camera frame thường
-          frame = await asyncio.to_thread(camera_service.get_frame)
+        frame = await asyncio.to_thread(camera_service.get_frame)
         
         if not frame:
           # Fallback placeholder
@@ -156,12 +145,13 @@ async def get_mjpeg_stream(request: Request) -> StreamingResponse:
 @app.get("/api/stream/analyze")
 async def analyze_stream_frame() -> dict:
   """Phân tích frame camera hiện tại và trả về kết quả realtime."""
-  frame = camera_service.get_frame()
-  if not frame:
+  frame = await asyncio.to_thread(camera_service.get_raw_frame)
+  if frame is None:
     raise HTTPException(status_code=404, detail="Không có frame camera")
 
-  analysis = await inference_service.analyze_bytes(frame)
-  return analysis.dict()
+  result, annotated_bytes, annotated_url = await inference_service.analyze_and_render(frame)
+  line_controller.update_last_detection(result, annotated_bytes, annotated_url)
+  return _format_inference_response(result, annotated_url)
 
 
 @app.websocket("/api/stream/ws")
@@ -218,6 +208,27 @@ async def get_line_last_inference() -> dict:
   if not result:
     raise HTTPException(status_code=404, detail="Chưa có inference nào từ băng tải")
   return result.dict()
+
+
+@app.get("/api/line/last_snapshot")
+async def get_line_last_snapshot() -> dict:
+  """Lấy snapshot ảnh + kết quả detection gần nhất để FE hiển thị."""
+  snapshot = line_controller.get_last_snapshot()
+  if not snapshot:
+    raise HTTPException(status_code=404, detail="Chưa có snapshot detection")
+
+  annotated_url = snapshot.get("frameUrl")
+  timestamp = snapshot.get("timestamp") or 0.0
+  captured_at = None
+  if timestamp:
+    captured_at = datetime.utcfromtimestamp(timestamp).isoformat() + "Z"
+
+  result = snapshot.get("result")
+  return {
+    "capturedAt": captured_at,
+    "annotatedImageUrl": annotated_url,
+    "inference": result.dict() if result else None,
+  }
 
 
 @app.post("/api/line/command")
