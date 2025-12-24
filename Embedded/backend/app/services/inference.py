@@ -128,14 +128,20 @@ class InferenceService:
                 self._current_profile = BoardProfile(**data)
                 
                 ref_path = Path(self._current_profile.reference_image_path)
+                if not ref_path.exists():
+                    # Fallback: nếu đường dẫn trong JSON là absolute (Linux) thì tìm theo tên file trong artifacts/templates
+                    candidate = self._settings.artifacts_dir / "templates" / ref_path.name
+                    if candidate.exists():
+                        ref_path = candidate
+
                 if ref_path.exists():
                     self._ref_image_cache = cv2.imread(str(ref_path))
                     
-                    # Pre-calculate SIFT for reference image
+                    # Pre-calculate SIFT cho ảnh tham chiếu
                     mask_ref = self._create_pcb_mask(self._ref_image_cache)
                     gray_ref = cv2.cvtColor(self._ref_image_cache, cv2.COLOR_BGR2GRAY)
                     self._ref_kp, self._ref_des = self._sift.detectAndCompute(gray_ref, mask_ref)
-                    logger.info(f"✓ Loaded profile '{profile_name}'")
+                    logger.info(f"✓ Loaded profile '{profile_name}' với reference {ref_path}")
                     
         except Exception as e:
             logger.error(f"Error loading profile: {e}")
@@ -257,58 +263,136 @@ class InferenceService:
         except: return 0.0
 
     def _analyze(self, image: np.ndarray) -> InferenceResponse:
-        """
-        Phân tích PCB bằng YOLO model đã train.
-        Detect các lỗi/khuyết tật trực tiếp từ model.
-        """
+        """Phân tích PCB và phân biệt linh kiện đủ/thiếu dựa trên template."""
         logger.info(f"Input image shape: {image.shape}")
-        
-        # Detect bằng YOLO (không cần alignment, model đã học được)
-        results = self.model(image, verbose=False, conf=0.25)
-        logger.info(f"YOLO detected {len(results[0].boxes) if results else 0} boxes")
-        
-        # Lưu ảnh để vẽ boxes sau
-        self._last_aligned_img = image
-        
-        # Thu thập các defect được phát hiện bởi YOLO
-        missing_areas = []
-        defect_count = 0
-        
+
+        if self._current_profile is None:
+            self._load_active_profile()
+
+        # Align ảnh về reference để so sánh với template chính xác hơn
+        aligned_image = self._align_image(image) if self._current_profile else image
+
+        # Detect bằng YOLO trên ảnh đã align
+        results = self.model(aligned_image, verbose=False, conf=0.25)
+        detected_count = len(results[0].boxes) if results else 0
+        logger.info(f"YOLO detected {detected_count} components")
+
+        self._last_aligned_img = aligned_image
+
+        detected_components: List[MissingArea] = []
+        detected_boxes: List[List[float]] = []
+
         for r in results:
             for box in r.boxes:
-                # box.xywhn: [x_center, y_center, width, height] normalized
                 x_center, y_center, width, height = box.xywhn[0].tolist()
                 conf = float(box.conf[0])
                 class_id = int(box.cls[0])
-                
-                # Lấy tên class từ model (nếu có)
-                class_name = self.model.names.get(class_id, f"Class {class_id}")
-                
-                # Mỗi detection là một defect/lỗi
-                missing_areas.append(MissingArea(
-                    id=f"defect_{defect_count}",
-                    description=f"{class_name}",
-                    confidence=conf,
-                    bbox=BoundingBox(
-                        x=x_center - width/2,
-                        y=y_center - height/2,
-                        width=width,
-                        height=height
+                class_name = self.model.names.get(class_id, "components")
+
+                detected_boxes.append([x_center, y_center, width, height])
+                detected_components.append(
+                    MissingArea(
+                        id=f"component_{len(detected_components)}",
+                        description=class_name,
+                        confidence=conf,
+                        bbox=BoundingBox(
+                            x=x_center - width / 2,
+                            y=y_center - height / 2,
+                            width=width,
+                            height=height,
+                        ),
                     )
-                ))
-                defect_count += 1
-        
-        # PCB có lỗi nếu YOLO phát hiện bất kỳ defect nào
+                )
+
+        missing_areas: List[MissingArea] = []
+        template_components = self._current_profile.components if self._current_profile else []
+        iou_threshold = 0.3
+        unmatched_indices = set(range(len(detected_boxes)))
+
+        if template_components:
+            logger.info(
+                "Template có %d components, detected %d",
+                len(template_components),
+                detected_count,
+            )
+            for component in template_components:
+                template_box = component.box
+                if len(template_box) != 4:
+                    continue
+
+                best_idx: Optional[int] = None
+                best_iou = 0.0
+
+                for idx in list(unmatched_indices):
+                    det_box = detected_boxes[idx]
+                    iou = self._calculate_iou(template_box, det_box)
+                    if iou > best_iou:
+                        best_iou = iou
+                        best_idx = idx
+
+                if best_idx is not None and best_iou >= iou_threshold:
+                    unmatched_indices.discard(best_idx)
+                    continue
+
+                cx, cy, w, h = template_box
+                tx1, ty1 = cx - w / 2, cy - h / 2
+                tx2, ty2 = cx + w / 2, cy + h / 2
+
+                matched_by_center: Optional[int] = None
+                for idx in list(unmatched_indices):
+                    det_cx, det_cy, _, _ = detected_boxes[idx]
+                    if tx1 <= det_cx <= tx2 and ty1 <= det_cy <= ty2:
+                        matched_by_center = idx
+                        unmatched_indices.discard(idx)
+                        break
+
+                if matched_by_center is not None:
+                    continue
+
+                missing_areas.append(
+                    MissingArea(
+                        id=f"missing_{component.id}",
+                        description=component.label,
+                        confidence=max(0.1, 1.0 - max(best_iou, 0.0)),
+                        bbox=BoundingBox(
+                            x=tx1,
+                            y=ty1,
+                            width=w,
+                            height=h,
+                        ),
+                    )
+                )
+        else:
+            # Không có template → fallback như logic cũ
+            missing_areas = detected_components.copy()
+
         is_defective = len(missing_areas) > 0
-        avg_confidence = sum(area.confidence for area in missing_areas) / len(missing_areas) if missing_areas else 0.0
+        avg_confidence = (
+            sum(component.confidence for component in detected_components) / len(detected_components)
+            if detected_components
+            else 0.0
+        )
+        board_name = self._current_profile.boardName if self._current_profile else "PCB"
+
+        if template_components:
+            note_text = (
+                f"Thiếu {len(missing_areas)} / {len(template_components)} linh kiện."
+                if is_defective
+                else f"PCB OK - Đủ {detected_count} / {len(template_components)} linh kiện."
+            )
+        else:
+            note_text = (
+                f"Phát hiện {len(missing_areas)} lỗi/khuyết tật." if is_defective else "PCB đạt chất lượng."
+            )
 
         return InferenceResponse(
             isDefective=is_defective,
-            confidence=avg_confidence if is_defective else 0.95,
+            confidence=avg_confidence,
             timestamp=datetime.utcnow(),
-            boardName="PCB",
+            boardName=board_name,
             missingAreas=missing_areas,
-            notes=f"Phát hiện {defect_count} lỗi/khuyết tật." if is_defective else "PCB đạt chất lượng."
+            detectedComponents=detected_components,
+            notes=note_text,
         )
 
     def draw_detection_boxes(self, img: np.ndarray, result: InferenceResponse) -> bytes:
@@ -321,9 +405,28 @@ class InferenceService:
         vis = aligned.copy()
         h, w = vis.shape[:2]
         
-        logger.info(f"Drawing boxes on aligned image: WxH={w}x{h} (shape={vis.shape}), missing areas: {len(result.missingAreas)}")
-        
-        # Vẽ các vùng thiếu từ result (chỉ box mỏng màu đỏ)
+        detected_components = getattr(result, "detectedComponents", [])
+        logger.info(
+            "Drawing boxes on aligned image: WxH=%dx%d, detected=%d, missing=%d",
+            w,
+            h,
+            len(detected_components),
+            len(result.missingAreas),
+        )
+
+        # Vẽ linh kiện đủ (màu xanh)
+        for component in detected_components:
+            if not component.bbox:
+                continue
+            x1 = int(component.bbox.x * w)
+            y1 = int(component.bbox.y * h)
+            x2 = int((component.bbox.x + component.bbox.width) * w)
+            y2 = int((component.bbox.y + component.bbox.height) * h)
+            cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 0), 4)
+            label = f"{component.description} {component.confidence:.0%}"
+            cv2.putText(vis, label, (x1, max(20, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+        # Vẽ linh kiện thiếu (màu đỏ)
         for area in result.missingAreas:
             if not area.bbox:
                 continue
@@ -331,8 +434,9 @@ class InferenceService:
             y1 = int(area.bbox.y * h)
             x2 = int((area.bbox.x + area.bbox.width) * w)
             y2 = int((area.bbox.y + area.bbox.height) * h)
-            logger.info(f"Box: ({x1},{y1}) -> ({x2},{y2}), normalized: ({area.bbox.x:.3f},{area.bbox.y:.3f},{area.bbox.width:.3f},{area.bbox.height:.3f})")
-            cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 0, 255), 5)
+            cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 0, 255), 4)
+            label = f"MISSING: {area.description}"
+            cv2.putText(vis, label, (x1, max(20, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         
         # Encode JPEG để stream
         success, buffer = cv2.imencode('.jpg', vis, [cv2.IMWRITE_JPEG_QUALITY, 85])

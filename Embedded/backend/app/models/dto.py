@@ -46,6 +46,7 @@ class InferenceResponse(BaseModel):
   confidence: float
   timestamp: datetime
   missingAreas: List[MissingArea] = Field(default_factory=list)
+  detectedComponents: List[MissingArea] = Field(default_factory=list)
   notes: Optional[str]
   boardName: str = "Unknown" 
 
