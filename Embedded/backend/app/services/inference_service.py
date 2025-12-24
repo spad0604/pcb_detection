@@ -375,6 +375,7 @@ class InferenceService:
         is_defective = len(missing_areas) > 0
         total_comps = len(self._current_profile.components)
         found_comps = total_comps - len(missing_areas)
+        missing_labels = [area.description for area in missing_areas if area.description]
 
         return InferenceResponse(
             isDefective=is_defective,
@@ -382,5 +383,6 @@ class InferenceService:
             timestamp=datetime.utcnow(),
             boardName=self._current_profile.boardName,
             missingAreas=missing_areas,
+            missingComponentLabels=missing_labels,
             notes=f"Kiểm tra: {found_comps}/{total_comps} linh kiện. (Matches: {len(matched_results)})"
         )

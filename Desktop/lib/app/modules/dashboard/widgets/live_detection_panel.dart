@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import '../../../models/inference_result.dart';
 import '../../../models/line_snapshot.dart';
+import '../../../utils/component_labels.dart';
 import '../dashboard_controller.dart';
 
 class LiveDetectionPanel extends StatelessWidget {
@@ -149,14 +150,36 @@ class _DetectionDetails extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final labels = result.missingComponentLabels;
+    final missingCount = labels.length;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          result.isDefective ? 'Thiếu linh kiện' : 'Đã tìm thấy đủ ${result.missingAreas.length} vùng',
+          result.isDefective
+              ? (missingCount > 0
+                  ? 'Thiếu $missingCount linh kiện quan trọng'
+                  : 'Thiếu linh kiện (đang xác định)')
+              : 'Không phát hiện linh kiện thiếu',
           style: const TextStyle(fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 8),
+        if (result.isDefective && labels.isNotEmpty) ...[
+          const Text('Danh sách linh kiện thiếu:',
+              style: TextStyle(color: Colors.black87)),
+          const SizedBox(height: 4),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: labels
+                .map((label) => Chip(
+                      label: Text(ComponentLabels.toVietnamese(label)),
+                      backgroundColor: Colors.red.shade50,
+                    ))
+                .toList(),
+          ),
+          const SizedBox(height: 12),
+        ],
         if (result.missingAreas.isEmpty)
           const Text('Không phát hiện vùng thiếu trong lần chụp này.',
               style: TextStyle(color: Colors.black54))
@@ -168,8 +191,9 @@ class _DetectionDetails extends StatelessWidget {
                 .map(
                   (area) => Chip(
                     label: Text(
-                      '${area.description} (${(area.confidence * 100).toStringAsFixed(0)}%)',
+                      '${ComponentLabels.toVietnamese(area.description)} (${(area.confidence * 100).toStringAsFixed(0)}%)',
                     ),
+                    backgroundColor: Colors.orange.shade50,
                   ),
                 )
                 .toList(),

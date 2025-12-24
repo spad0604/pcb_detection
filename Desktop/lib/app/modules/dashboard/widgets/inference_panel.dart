@@ -7,6 +7,7 @@ import 'package:get/get.dart';
 import 'package:intl/intl.dart';
 
 import '../../../models/inference_result.dart';
+import '../../../utils/component_labels.dart';
 import '../dashboard_controller.dart';
 
 class InferencePanel extends StatelessWidget {
@@ -247,7 +248,7 @@ class _BoundingBoxPainter extends CustomPainter {
 
       // Vẽ label
       final textSpan = TextSpan(
-        text: '${area.description} (${(area.confidence * 100).toStringAsFixed(0)}%)',
+        text: '${ComponentLabels.toVietnamese(area.description)} (${(area.confidence * 100).toStringAsFixed(0)}%)',
         style: const TextStyle(
           color: Colors.white,
           fontSize: 12,
@@ -289,6 +290,7 @@ class _InferenceSummary extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final verdictColor = result.isDefective ? Colors.red : Colors.green;
+    final missingLabels = result.missingComponentLabels;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -316,6 +318,22 @@ class _InferenceSummary extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 16),
+        if (result.isDefective && missingLabels.isNotEmpty) ...[
+          const Text('Linh kiện đang thiếu:',
+              style: TextStyle(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: missingLabels
+                .map((label) => Chip(
+                      label: Text(ComponentLabels.toVietnamese(label)),
+                      backgroundColor: Colors.red.shade50,
+                    ))
+                .toList(),
+          ),
+          const SizedBox(height: 12),
+        ],
         if (result.missingAreas.isEmpty)
           const Text('Không phát hiện khu vực thiếu linh kiện.')
         else ...[
@@ -328,7 +346,8 @@ class _InferenceSummary extends StatelessWidget {
             children: result.missingAreas
                 .map((area) => Chip(
                       label: Text(
-                          '${area.description} (${(area.confidence * 100).toStringAsFixed(0)}%)'),
+                          '${ComponentLabels.toVietnamese(area.description)} (${(area.confidence * 100).toStringAsFixed(0)}%)'),
+                      backgroundColor: Colors.orange.shade50,
                     ))
                 .toList(),
           ),

@@ -373,6 +373,7 @@ class InferenceService:
             else 0.0
         )
         board_name = self._current_profile.boardName if self._current_profile else "PCB"
+        missing_labels = [area.description for area in missing_areas if area.description]
 
         if template_components:
             note_text = (
@@ -392,6 +393,7 @@ class InferenceService:
             boardName=board_name,
             missingAreas=missing_areas,
             detectedComponents=detected_components,
+            missingComponentLabels=missing_labels,
             notes=note_text,
         )
 

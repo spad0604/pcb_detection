@@ -48,6 +48,7 @@ class InferenceResult {
     required this.confidence,
     required this.timestamp,
     this.missingAreas = const [],
+    this.missingComponentLabels = const [],
     this.notes,
     this.annotatedImageUrl,
   });
@@ -56,6 +57,7 @@ class InferenceResult {
   final double confidence;
   final DateTime timestamp;
   final List<MissingArea> missingAreas;
+  final List<String> missingComponentLabels;
   final String? notes;
   final String? annotatedImageUrl;
 
@@ -68,6 +70,10 @@ class InferenceResult {
         missingAreas: (json['missingAreas'] as List<dynamic>? ?? [])
             .map((e) => MissingArea.fromJson(e as Map<String, dynamic>))
             .toList(),
+        missingComponentLabels:
+            (json['missingComponentLabels'] as List<dynamic>? ?? [])
+                .map((e) => e.toString())
+                .toList(),
         notes: json['notes'] as String?,
         annotatedImageUrl: json['annotatedImageUrl'] as String?,
       );
