@@ -82,10 +82,50 @@ class DashboardController extends GetxController {
     _stopWebSocketStream();
     if (!liveEnabled.value) return;
 
-    // Không dùng WebSocket nữa, chỉ dùng HTTP polling để có annotated frames
-    _addLog('Sử dụng HTTP polling cho stream (để hiển thị detection boxes)',
-        level: ActivityLogLevel.info);
-    _startHttpPollingFallback();
+    try {
+      // Sử dụng WebSocket để stream video mượt mà, giảm tải backend
+      final wsUrl = apiService.baseUrl.replaceFirst('http', 'ws') + '/api/stream/ws';
+      _wsChannel = WebSocketChannel.connect(Uri.parse(wsUrl));
+      
+      _wsSubscription = _wsChannel!.stream.listen(
+        (dynamic message) {
+          try {
+            final data = json.decode(message as String) as Map<String, dynamic>;
+            if (data['type'] == 'frame') {
+              final frameBase64 = data['data'] as String;
+              final bytes = base64.decode(frameBase64);
+              liveFrame.value = Uint8List.fromList(bytes);
+              _liveWarningShown = false;
+            }
+          } catch (e) {
+            // Ignore decode errors
+          }
+        },
+        onError: (error) {
+          if (!_liveWarningShown) {
+            _addLog('WebSocket lỗi, chuyển sang HTTP polling: $error',
+                level: ActivityLogLevel.warning);
+            _liveWarningShown = true;
+          }
+          _startHttpPollingFallback();
+        },
+        onDone: () {
+          if (!_liveWarningShown) {
+            _addLog('WebSocket ngắt kết nối, chuyển sang HTTP polling',
+                level: ActivityLogLevel.warning);
+            _liveWarningShown = true;
+          }
+          _startHttpPollingFallback();
+        },
+      );
+      
+      _addLog('Đã kết nối WebSocket stream (mượt hơn, ít lag)',
+          level: ActivityLogLevel.success);
+    } catch (error) {
+      _addLog('Không thể kết nối WebSocket, dùng HTTP polling: $error',
+          level: ActivityLogLevel.warning);
+      _startHttpPollingFallback();
+    }
 
     // KHÔNG chạy analysis timer - chỉ detect khi có trigger (Arduino hoặc Test button)
     // Kết quả detection sẽ tự động hiển thị qua line status polling
@@ -102,8 +142,8 @@ class DashboardController extends GetxController {
   void _startHttpPollingFallback() {
     _liveTimer?.cancel();
     _liveTimer =
-        Timer.periodic(const Duration(milliseconds: 33), (_) {
-      // Không await để không block timer
+        Timer.periodic(const Duration(milliseconds: 100), (_) {
+      // Giảm từ 33ms xuống 100ms (10 FPS) để giảm lag
       _pullLiveFrame();
     });
   }

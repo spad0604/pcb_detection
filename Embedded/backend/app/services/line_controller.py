@@ -31,7 +31,7 @@ class LineController:
     ) -> None:
         self.camera_service = camera_service
         self.inference_service = inference_service
-        self.port = port or os.getenv("NANO_PORT", "/dev/ttyUSB0")
+        self.port = port or os.getenv("NANO_PORT", "COM33")
         self.baud = baud or int(os.getenv("NANO_BAUD", "115200"))
         self._serial: serial.Serial | None = None
         self._reader_thread: threading.Thread | None = None
@@ -178,7 +178,11 @@ class LineController:
                 continue
             if not text:
                 continue
-            logger.debug("Nano => %s", text)
+            # Log tất cả messages từ Arduino
+            if text.startswith("EVENT:"):
+                logger.info("📡 Arduino => %s", text)
+            else:
+                logger.debug("Nano => %s", text)
             self._handle_line(text)
         logger.info("Reader thread stopped")
 
@@ -188,6 +192,7 @@ class LineController:
             self._parse_status(line)
             return
         if line == "EVENT:BOARD_AT_CAMERA":
+            logger.info("🎯 Nhận EVENT: Băng tải dừng, bắt đầu detection!")
             self._schedule_detection()
             return
         if line == "EVENT:RESET_DONE":
@@ -227,45 +232,49 @@ class LineController:
         self._status_snapshot = snapshot
 
     def _schedule_detection(self) -> None:
-        if not self._loop or self._waiting:
+        if not self._loop:
+            logger.warning("❌ Event loop chưa sẵn sàng, bỏ qua detection")
+            return
+        if self._waiting:
+            logger.warning("⏳ Detection đang chạy, bỏ qua trigger mới")
             return
         self._waiting = True
         self._status_snapshot["WAIT"] = True
+        logger.info("✅ Scheduled detection task")
         future = asyncio.run_coroutine_threadsafe(self._auto_detect(), self._loop)
         future.add_done_callback(lambda _: None)
 
     async def _auto_detect(self) -> None:
         try:
-            # Lấy nhiều RAW frame rồi chọn frame có nhiều keypoints nhất
-            best_frame: np.ndarray | None = None
-            best_score = -1
-            for idx in range(self.frame_sample_count):
-                img = await asyncio.to_thread(self.camera_service.get_raw_frame)
-                if img is None:
-                    continue
-                score = self.inference_service.estimate_frame_quality(img)
-                logger.info("Frame sample %d có %d keypoints", idx + 1, score)
-                if score > best_score:
-                    best_score = score
-                    best_frame = img
-                await asyncio.sleep(0.03)
-
-            if best_frame is None:
+            # Đợi 1 giây để băng tải dừng hẳn và ổn định
+            await asyncio.sleep(1.0)
+            logger.info("⏱️  Đợi băng tải dừng ổn định (1s)")
+            
+            # Chụp 1 frame duy nhất
+            img = await asyncio.to_thread(self.camera_service.get_raw_frame)
+            if img is None:
                 logger.warning("Không có frame camera để detect")
                 self.send_command("CMD:RESULT:NG")
                 return
 
-            h, w = best_frame.shape[:2]
-            logger.info("Camera frame shape: %dx%d, keypoints=%d", w, h, best_score)
+            h, w = img.shape[:2]
+            logger.info("📸 Camera frame gốc: %dx%d", w, h)
+            
+            # Crop phần bên trái để loại bỏ sensor/phụ kiện (giữ lại 80% bên phải)
+            crop_left = int(w * 0.2)  # Bỏ 20% bên trái
+            img_cropped = img[:, crop_left:]  # [y, x] - giữ toàn bộ height, crop width
+            h_crop, w_crop = img_cropped.shape[:2]
+            logger.info("✂️  Cropped: %dx%d (bỏ %dpx bên trái)", w_crop, h_crop, crop_left)
+            
             # Lưu frame gốc để debug
             try:
-                cv2.imwrite("/tmp/pcb_capture_raw.jpg", best_frame)
-                logger.info("Đã lưu ảnh gốc: /tmp/pcb_capture_raw.jpg")
+                cv2.imwrite("/tmp/pcb_capture_raw.jpg", img_cropped)
+                logger.info("Đã lưu ảnh đã crop: /tmp/pcb_capture_raw.jpg")
             except Exception as e:
                 logger.warning(f"Không lưu được ảnh gốc: {e}")
             
-            # Phân tích trực tiếp từ numpy array (không encode/decode JPEG)
-            result, annotated_frame, annotated_url = await self.inference_service.analyze_and_render(best_frame)
+            # Phân tích ảnh đã crop
+            result, annotated_frame, annotated_url = await self.inference_service.analyze_and_render(img_cropped)
             self.update_last_detection(result, annotated_frame, annotated_url)
             # Lưu ảnh annotated để xem lại
             try:

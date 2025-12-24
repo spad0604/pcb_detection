@@ -5,7 +5,9 @@ import os
 import json
 import logging
 import base64
+import time
 from datetime import datetime
+from typing import Any
 
 import cv2
 import numpy as np
@@ -23,10 +25,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
+
+# Simple cache để giảm tải backend khi FE poll liên tục
+_status_cache: dict[str, Any] = {"data": None, "time": 0.0}
+_snapshot_cache: dict[str, Any] = {"data": None, "time": 0.0}
+CACHE_TTL = 0.05  # 50ms cache - đủ để giảm spam nhưng vẫn realtime
 inference_service = InferenceService(settings)
 
 camera_index_env = os.getenv("CAMERA_INDEX")
-camera_index = int(camera_index_env) if camera_index_env is not None else 0
+camera_index = int(camera_index_env) if camera_index_env is not None else 2
 camera_service = CameraService(settings, camera_index=camera_index)
 
 if camera_service.initialize():
@@ -66,7 +73,7 @@ async def shutdown_event() -> None:
 @app.get("/health")
 async def health_check() -> dict:
     return {"status": "ok", "mode": "YOLO_Alignment"}
-
+\
 # INFERENCE 
 @app.post("/api/inference")
 async def run_inference(file: UploadFile = File(...)) -> dict:
@@ -198,7 +205,15 @@ class LineCommand(BaseModel):
 @app.get("/api/line/status")
 async def get_line_status() -> dict:
   """Lấy trạng thái băng tải (OK/NG count, machine state, last inference)."""
-  return line_controller.get_status()
+  # Cache 50ms để tránh spam backend
+  now = time.time()
+  if _status_cache["data"] and (now - _status_cache["time"]) < CACHE_TTL:
+    return _status_cache["data"]
+  
+  status = line_controller.get_status()
+  _status_cache["data"] = status
+  _status_cache["time"] = now
+  return status
 
 
 @app.get("/api/line/last_inference")
@@ -213,6 +228,11 @@ async def get_line_last_inference() -> dict:
 @app.get("/api/line/last_snapshot")
 async def get_line_last_snapshot() -> dict:
   """Lấy snapshot ảnh + kết quả detection gần nhất để FE hiển thị."""
+  # Cache 50ms để tránh spam backend
+  now = time.time()
+  if _snapshot_cache["data"] and (now - _snapshot_cache["time"]) < CACHE_TTL:
+    return _snapshot_cache["data"]
+  
   snapshot = line_controller.get_last_snapshot()
   if not snapshot:
     raise HTTPException(status_code=404, detail="Chưa có snapshot detection")
@@ -224,11 +244,15 @@ async def get_line_last_snapshot() -> dict:
     captured_at = datetime.utcfromtimestamp(timestamp).isoformat() + "Z"
 
   result = snapshot.get("result")
-  return {
+  response = {
     "capturedAt": captured_at,
     "annotatedImageUrl": annotated_url,
     "inference": result.dict() if result else None,
   }
+  
+  _snapshot_cache["data"] = response
+  _snapshot_cache["time"] = now
+  return response
 
 
 @app.post("/api/line/command")

@@ -26,13 +26,25 @@ class InferenceService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         
-        model_path = Path("/home/nguyen-giap/pcb_detection/Embedded/data/artifacts/best.pt")
-        if not model_path.exists():
+        # Try multiple model paths (model nằm ngoài backend: ../data/artifacts/)
+        model_paths = [
+            Path(__file__).parent.parent.parent.parent / "data" / "artifacts" / "best.pt",  # Từ app/services/ lên 4 cấp
+            Path("../data/artifacts/best.pt"),  # Từ backend/ lên 1 cấp
+            Path("yolov8n.pt")
+        ]
+        
+        model_path = None
+        for path in model_paths:
+            if path.exists():
+                model_path = path
+                break
+        
+        if model_path and model_path.name == "best.pt":
+            logger.info(f"✓ Đã load model YOLO từ: {model_path.absolute()}")
+            self.model = YOLO(str(model_path))
+        else:
             logger.warning("Không tìm thấy best.pt, dùng yolov8n.pt")
             self.model = YOLO("yolov8n.pt")
-        else:
-            logger.info(f"✓ Đã load model YOLO từ: {model_path}")
-            self.model = YOLO(str(model_path))
         
         # Configure Cloudinary uploads
         self._cloudinary_enabled = False
@@ -246,123 +258,57 @@ class InferenceService:
 
     def _analyze(self, image: np.ndarray) -> InferenceResponse:
         """
-        Hàm chính thực hiện logic phân tích.
-        Sử dụng logic 'Local Greedy' và các ngưỡng từ collab.py.
+        Phân tích PCB bằng YOLO model đã train.
+        Detect các lỗi/khuyết tật trực tiếp từ model.
         """
-        # Reload profile if needed
-        if self._current_profile is None:
-            self._load_active_profile()
-            
-        if self._current_profile is None or self._ref_image_cache is None:
-             return InferenceResponse(
-                 isDefective=False, confidence=0.0, timestamp=datetime.utcnow(), 
-                 boardName="Unknown", notes="Chưa có profile nào được train."
-             )
-
-        # 1. Alignment
         logger.info(f"Input image shape: {image.shape}")
-        aligned_img = self._align_image(image)
-        self._last_aligned_img = aligned_img  # Lưu để vẽ boxes sau
-        logger.info(f"Aligned image shape: {aligned_img.shape}")
-
-        # 2. Detect YOLO
-        results = self.model(aligned_img, verbose=False, conf=0.25)
+        
+        # Detect bằng YOLO (không cần alignment, model đã học được)
+        results = self.model(image, verbose=False, conf=0.25)
         logger.info(f"YOLO detected {len(results[0].boxes) if results else 0} boxes")
         
-        detected_candidates = []
-        for r in results:
-            for i, box in enumerate(r.boxes):
-                detected_candidates.append({
-                    'id': i,
-                    'box': box.xywhn[0].tolist(), # [x, y, w, h] normalized
-                    'conf': float(box.conf[0]),
-                    'is_used': False
-                })
-
-        # 3. MATCHING LOGIC
-        missing_areas = []
-        total_comps = len(self._current_profile.components)
+        # Lưu ảnh để vẽ boxes sau
+        self._last_aligned_img = image
         
-        # Duyệt qua từng linh kiện mẫu (Template)
-        for temp_comp in self._current_profile.components:
-            tx, ty, tw, th = temp_comp.box
-            
-            matched_candidate = None
-            best_score = -999
-
-            for candidate in detected_candidates:
-                if candidate['is_used']:
-                    continue
-
-                iou = self._calculate_iou(temp_comp.box, candidate['box'])
-                dx, dy, _, _ = candidate['box']
-                dist = np.sqrt((tx - dx)**2 + (ty - dy)**2)
-
-                # ĐIỀU KIỆN KHỚP 
-                is_match = (iou > 0.01) or (dist < 0.06)
-
-                if is_match:
-                    score = iou + (1.0 - dist)
-                    if score > best_score:
-                        best_score = score
-                        matched_candidate = candidate
-
-            # Kiểm tra kết quả khớp
-            yolo_found = False
-            if matched_candidate:
-                yolo_found = True
-                matched_candidate['is_used'] = True 
-            
-            is_present = False
-            
-            if yolo_found:
-                matched_box = matched_candidate['box']
-                matched_conf = matched_candidate['conf']
+        # Thu thập các defect được phát hiện bởi YOLO
+        missing_areas = []
+        defect_count = 0
+        
+        for r in results:
+            for box in r.boxes:
+                # box.xywhn: [x_center, y_center, width, height] normalized
+                x_center, y_center, width, height = box.xywhn[0].tolist()
+                conf = float(box.conf[0])
+                class_id = int(box.cls[0])
                 
-                # Verify Visual
-                vis_score = self._verify_visual(aligned_img, matched_box)
-
-                # LOGIC PHÁN ĐOÁN 
-                if vis_score > 0.15:
-                    is_present = True # OK
-                elif matched_conf > 0.3: 
-                    is_present = True # OK
-                else:
-                    is_present = False 
-
-            # Xử lý kết quả để trả về API
-            if yolo_found and is_present:
-                pass
-            
-            elif yolo_found and not is_present:
+                # Lấy tên class từ model (nếu có)
+                class_name = self.model.names.get(class_id, f"Class {class_id}")
                 
+                # Mỗi detection là một defect/lỗi
                 missing_areas.append(MissingArea(
-                    id=f"bad_{temp_comp.id}",
-                    description="Lỗi/Sai linh kiện",
-                    confidence=matched_candidate['conf'],
-                    bbox=BoundingBox(x=tx - tw/2, y=ty - th/2, width=tw, height=th)
+                    id=f"defect_{defect_count}",
+                    description=f"{class_name}",
+                    confidence=conf,
+                    bbox=BoundingBox(
+                        x=x_center - width/2,
+                        y=y_center - height/2,
+                        width=width,
+                        height=height
+                    )
                 ))
-            
-            else:
-                # MISSING
-                missing_areas.append(MissingArea(
-                    id=f"missing_{temp_comp.id}",
-                    description=temp_comp.label if hasattr(temp_comp, 'label') else "Thiếu linh kiện",
-                    confidence=1.0,
-                    bbox=BoundingBox(x=tx - tw/2, y=ty - th/2, width=tw, height=th)
-                ))
-
-        # Tổng hợp kết quả
+                defect_count += 1
+        
+        # PCB có lỗi nếu YOLO phát hiện bất kỳ defect nào
         is_defective = len(missing_areas) > 0
-        found_comps = total_comps - len(missing_areas)
+        avg_confidence = sum(area.confidence for area in missing_areas) / len(missing_areas) if missing_areas else 0.0
 
         return InferenceResponse(
             isDefective=is_defective,
-            confidence=1.0 if is_defective else 0.99,
+            confidence=avg_confidence if is_defective else 0.95,
             timestamp=datetime.utcnow(),
-            boardName=self._current_profile.boardName,
+            boardName="PCB",
             missingAreas=missing_areas,
-            notes=f"Đã kiểm tra: {found_comps}/{total_comps} linh kiện."
+            notes=f"Phát hiện {defect_count} lỗi/khuyết tật." if is_defective else "PCB đạt chất lượng."
         )
 
     def draw_detection_boxes(self, img: np.ndarray, result: InferenceResponse) -> bytes:

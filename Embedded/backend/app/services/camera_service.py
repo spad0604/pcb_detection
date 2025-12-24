@@ -51,14 +51,14 @@ class CameraService:
 
   def __init__(self, settings: Settings, camera_index: int | None = None) -> None:
     self._settings = settings
-    # Nếu camera_index là None, sử dụng camera index 0 (DroidCam/phone camera)
+    # Nếu camera_index là None, sử dụng camera index 0
     if camera_index is None:
-      # Sử dụng index 0 - thường là camera điện thoại qua DroidCam/IP Webcam
+      # Sử dụng index 0 - camera mặc định (có thể thay đổi từ FE)
       self._camera_index = 0
-      logger.info(f"Sử dụng camera mặc định tại index 0 (camera điện thoại)")
+      logger.info(f"Sử dụng camera mặc định tại index 0")
     else:
       self._camera_index = camera_index
-      logger.info(f"Sử dụng camera index {camera_index} (từ CAMERA_INDEX env var)")
+      logger.info(f"Sử dụng camera index {camera_index} (từ CAMERA_INDEX env var hoặc FE)")
     self._cap: cv2.VideoCapture | None = None
     self._lock = threading.Lock()
     self._last_frame: bytes | None = None
