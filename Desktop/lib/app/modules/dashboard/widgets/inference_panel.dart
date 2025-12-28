@@ -64,9 +64,11 @@ class InferencePanel extends StatelessWidget {
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Ưu tiên annotatedImage từ backend (đã xoay + vẽ boxes)
-                  if (result.annotatedImageUrl != null) ...[
-                    _AnnotatedImage(imageUrl: result.annotatedImageUrl!),
+                  // Hiển thị ảnh annotated từ backend endpoint nếu có
+                  if (result.hasAnnotatedImage == true) ...[
+                    _AnnotatedImageFromEndpoint(
+                      timestamp: result.timestamp.millisecondsSinceEpoch,
+                    ),
                     const SizedBox(height: 16),
                   ] else if (imagePath != null) ...[
                     _ImageWithBoundingBoxes(
@@ -363,6 +365,45 @@ class _InferenceSummary extends StatelessWidget {
     );
   }
 }
+class _AnnotatedImageFromEndpoint extends GetView<DashboardController> {
+  const _AnnotatedImageFromEndpoint({required this.timestamp});
+
+  final int timestamp;
+
+  @override
+  Widget build(BuildContext context) {
+    final baseUrl = controller.apiService.baseUrl;
+    // Dùng timestamp từ result thay vì DateTime.now() để tránh nháy
+    final imageUrl = '$baseUrl/api/stream/annotated?t=$timestamp';
+    
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        constraints: const BoxConstraints(maxHeight: 600),
+        color: Colors.black12,
+        child: Image.network(
+          imageUrl,
+          key: ValueKey(timestamp), // Key để Flutter biết khi nào cần rebuild
+          fit: BoxFit.contain,
+          loadingBuilder: (context, child, loadingProgress) {
+            if (loadingProgress == null) return child;
+            return const Center(child: CircularProgressIndicator());
+          },
+          errorBuilder: (context, error, stackTrace) {
+            return Container(
+              height: 200,
+              color: Colors.red.shade100,
+              child: Center(
+                child: Text('Lỗi hiển thị ảnh: $error'),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
 class _AnnotatedImage extends StatelessWidget {
   const _AnnotatedImage({required this.imageUrl});
 

@@ -64,7 +64,7 @@ class _SnapshotContent extends StatelessWidget {
         ? 'Chưa xác định thời gian'
         : DateFormat('HH:mm:ss dd/MM').format(capturedAt.toLocal());
     final notes = result?.notes;
-    final imageUrl = snapshot.annotatedImageUrl;
+    final hasAnnotatedImage = snapshot.hasAnnotatedImage ?? false;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -103,21 +103,9 @@ class _SnapshotContent extends StatelessWidget {
           Text(notes, style: const TextStyle(fontSize: 13)),
         ],
         const SizedBox(height: 16),
-        if (imageUrl != null)
-          ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: AspectRatio(
-              aspectRatio: 4 / 3,
-              child: Image.network(
-                imageUrl,
-                fit: BoxFit.contain,
-                errorBuilder: (context, error, stackTrace) => Container(
-                  color: Colors.red.shade50,
-                  alignment: Alignment.center,
-                  child: Text('Lỗi tải ảnh: $error', textAlign: TextAlign.center),
-                ),
-              ),
-            ),
+        if (hasAnnotatedImage)
+          _AnnotatedImageFromEndpoint(
+            timestamp: snapshot.capturedAt?.millisecondsSinceEpoch ?? DateTime.now().millisecondsSinceEpoch,
           )
         else
           Container(
@@ -228,6 +216,42 @@ class _EmptyDetectionState extends StatelessWidget {
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.black54)),
         ],
+      ),
+    );
+  }
+}
+
+class _AnnotatedImageFromEndpoint extends GetView<DashboardController> {
+  const _AnnotatedImageFromEndpoint({required this.timestamp});
+
+  final int timestamp;
+
+  @override
+  Widget build(BuildContext context) {
+    final baseUrl = controller.apiService.baseUrl;
+    // Dùng timestamp từ snapshot thay vì DateTime.now() để tránh nháy
+    final imageUrl = '$baseUrl/api/stream/annotated?t=$timestamp';
+    
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: AspectRatio(
+        aspectRatio: 4 / 3,
+        child: Image.network(
+          imageUrl,
+          key: ValueKey(timestamp), // Key để tránh reload không cần thiết
+          fit: BoxFit.contain,
+          loadingBuilder: (context, child, loadingProgress) {
+            if (loadingProgress == null) return child;
+            return const Center(child: CircularProgressIndicator());
+          },
+          errorBuilder: (context, error, stackTrace) {
+            return Container(
+              color: Colors.red.shade50,
+              alignment: Alignment.center,
+              child: Text('Lỗi tải ảnh: $error', textAlign: TextAlign.center),
+            );
+          },
+        ),
       ),
     );
   }

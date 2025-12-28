@@ -33,7 +33,7 @@ CACHE_TTL = 0.05  # 50ms cache - đủ để giảm spam nhưng vẫn realtime
 inference_service = InferenceService(settings)
 
 camera_index_env = os.getenv("CAMERA_INDEX")
-camera_index = int(camera_index_env) if camera_index_env is not None else 2
+camera_index = int(camera_index_env) if camera_index_env is not None else 1
 camera_service = CameraService(settings, camera_index=camera_index)
 
 if camera_service.initialize():
@@ -46,9 +46,11 @@ line_controller = LineController(camera_service, inference_service)
 app = FastAPI(title="PCB Inspector API (YOLO + SIFT)", version="2.0.0")
 
 
-def _format_inference_response(result, annotated_url):
+def _format_inference_response(result, annotated_bytes):
+  """Format response với flag hasAnnotatedImage thay vì URL."""
   response = result.dict()
-  response["annotatedImageUrl"] = annotated_url
+  # FE sẽ dùng /api/stream/annotated để lấy ảnh nếu hasAnnotatedImage=true
+  response["hasAnnotatedImage"] = annotated_bytes is not None
   return response
 
 app.add_middleware(
@@ -84,7 +86,9 @@ async def run_inference(file: UploadFile = File(...)) -> dict:
     
     # Phân tích từ numpy array (không dùng file.read() nữa)
     result, annotated_bytes, annotated_url = await inference_service.analyze_and_render(img)
-    return _format_inference_response(result, annotated_url)
+    # Lưu annotated bytes vào line_controller để FE lấy qua /api/stream/annotated
+    line_controller.update_last_detection(result, annotated_bytes, annotated_url)
+    return _format_inference_response(result, annotated_bytes)
 
 
 @app.get("/api/stream/frame")
@@ -158,7 +162,7 @@ async def analyze_stream_frame() -> dict:
 
   result, annotated_bytes, annotated_url = await inference_service.analyze_and_render(frame)
   line_controller.update_last_detection(result, annotated_bytes, annotated_url)
-  return _format_inference_response(result, annotated_url)
+  return _format_inference_response(result, annotated_bytes)
 
 
 @app.websocket("/api/stream/ws")
@@ -237,7 +241,7 @@ async def get_line_last_snapshot() -> dict:
   if not snapshot:
     raise HTTPException(status_code=404, detail="Chưa có snapshot detection")
 
-  annotated_url = snapshot.get("frameUrl")
+  annotated_frame = snapshot.get("frame")
   timestamp = snapshot.get("timestamp") or 0.0
   captured_at = None
   if timestamp:
@@ -246,7 +250,7 @@ async def get_line_last_snapshot() -> dict:
   result = snapshot.get("result")
   response = {
     "capturedAt": captured_at,
-    "annotatedImageUrl": annotated_url,
+    "hasAnnotatedImage": annotated_frame is not None,
     "inference": result.dict() if result else None,
   }
   

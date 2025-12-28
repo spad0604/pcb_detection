@@ -3,19 +3,19 @@ import 'inference_result.dart';
 class LineSnapshot {
   const LineSnapshot({
     this.capturedAt,
-    this.annotatedImageUrl,
+    this.hasAnnotatedImage,
     this.inference,
   });
 
   final DateTime? capturedAt;
-  final String? annotatedImageUrl;
+  final bool? hasAnnotatedImage;
   final InferenceResult? inference;
 
   factory LineSnapshot.fromJson(Map<String, dynamic> json) {
     final captured = json['capturedAt'] as String?;
     return LineSnapshot(
       capturedAt: captured == null ? null : DateTime.tryParse(captured),
-      annotatedImageUrl: json['annotatedImageUrl'] as String?,
+      hasAnnotatedImage: json['hasAnnotatedImage'] as bool?,
       inference: json['inference'] == null
           ? null
           : InferenceResult.fromJson(

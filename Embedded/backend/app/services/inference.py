@@ -164,11 +164,12 @@ class InferenceService:
     async def analyze_and_render(
         self, img: np.ndarray
     ) -> Tuple[InferenceResponse, Optional[bytes], Optional[str]]:
-        """Chạy inference + render boxes + upload annotated image."""
+        """Chạy inference + render boxes + trả ảnh trực tiếp (không upload Cloudinary)."""
         result = await self.analyze_image(img)
         annotated = self.draw_detection_boxes(img, result)
         annotated_bytes = annotated if annotated else None
-        annotated_url = self._upload_annotated_image(annotated_bytes)
+        # Tắt upload Cloudinary để giảm thời gian response
+        annotated_url = None
         return result, annotated_bytes, annotated_url
 
     def _align_image(self, target_img: np.ndarray) -> np.ndarray:
@@ -265,6 +266,12 @@ class InferenceService:
     def _analyze(self, image: np.ndarray) -> InferenceResponse:
         """Phân tích PCB và phân biệt linh kiện đủ/thiếu dựa trên template."""
         logger.info(f"Input image shape: {image.shape}")
+        
+        # Xoay ảnh 90° nếu đang nằm ngang (landscape) để chuyển về dọc (portrait)
+        h, w = image.shape[:2]
+        if w > h:
+            image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+            logger.info(f"→ Đã xoay ảnh đầu vào 90° từ landscape {w}x{h} sang portrait {image.shape[1]}x{image.shape[0]}")
 
         if self._current_profile is None:
             self._load_active_profile()
