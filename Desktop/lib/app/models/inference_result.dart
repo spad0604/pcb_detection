@@ -51,6 +51,7 @@ class InferenceResult {
     this.missingComponentLabels = const [],
     this.notes,
     this.hasAnnotatedImage,
+    this.annotatedImageUrl,
   });
 
   final bool isDefective;
@@ -60,6 +61,7 @@ class InferenceResult {
   final List<String> missingComponentLabels;
   final String? notes;
   final bool? hasAnnotatedImage;
+  final String? annotatedImageUrl;
 
   factory InferenceResult.fromJson(Map<String, dynamic> json) =>
       InferenceResult(
@@ -76,5 +78,6 @@ class InferenceResult {
                 .toList(),
         notes: json['notes'] as String?,
         hasAnnotatedImage: json['hasAnnotatedImage'] as bool?,
+        annotatedImageUrl: json['annotatedImageUrl'] as String?,
       );
 }

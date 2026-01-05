@@ -46,11 +46,13 @@ line_controller = LineController(camera_service, inference_service)
 app = FastAPI(title="PCB Inspector API (YOLO + SIFT)", version="2.0.0")
 
 
-def _format_inference_response(result, annotated_bytes):
-  """Format response với flag hasAnnotatedImage thay vì URL."""
+def _format_inference_response(result, annotated_bytes, annotated_url=None):
+  """Format response with either hasAnnotatedImage or annotatedImageUrl."""
   response = result.dict()
   # FE sẽ dùng /api/stream/annotated để lấy ảnh nếu hasAnnotatedImage=true
   response["hasAnnotatedImage"] = annotated_bytes is not None
+  if annotated_url:
+    response["annotatedImageUrl"] = annotated_url
   return response
 
 app.add_middleware(
@@ -75,7 +77,7 @@ async def shutdown_event() -> None:
 @app.get("/health")
 async def health_check() -> dict:
     return {"status": "ok", "mode": "YOLO_Alignment"}
-\
+
 # INFERENCE 
 @app.post("/api/inference")
 async def run_inference(file: UploadFile = File(...)) -> dict:
@@ -88,7 +90,21 @@ async def run_inference(file: UploadFile = File(...)) -> dict:
     result, annotated_bytes, annotated_url = await inference_service.analyze_and_render(img)
     # Lưu annotated bytes vào line_controller để FE lấy qua /api/stream/annotated
     line_controller.update_last_detection(result, annotated_bytes, annotated_url)
-    return _format_inference_response(result, annotated_bytes)
+    return _format_inference_response(result, annotated_bytes, annotated_url)
+
+
+@app.post("/inferences")
+async def run_inferences_cloudinary(file: UploadFile = File(...)) -> dict:
+    """Upload image, run inference, upload annotated image to Cloudinary, return URL."""
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    result, annotated_bytes, annotated_url = await inference_service.analyze_and_render(
+        img, upload_cloudinary=True
+    )
+    line_controller.update_last_detection(result, annotated_bytes, annotated_url)
+    return _format_inference_response(result, annotated_bytes, annotated_url)
 
 
 @app.get("/api/stream/frame")
@@ -162,7 +178,7 @@ async def analyze_stream_frame() -> dict:
 
   result, annotated_bytes, annotated_url = await inference_service.analyze_and_render(frame)
   line_controller.update_last_detection(result, annotated_bytes, annotated_url)
-  return _format_inference_response(result, annotated_bytes)
+  return _format_inference_response(result, annotated_bytes, annotated_url)
 
 
 @app.websocket("/api/stream/ws")

@@ -6,6 +6,13 @@ class ComponentLabels {
     'LM2596_CHIP': 'Chip LM2596',
     'TRIMPOT': 'Biến trở xanh',
     'INDUCTOR_470': 'Cuộn cảm 470µH',
+
+    // New YOLO canonical labels
+    'Cuon cam': 'Cuộn cảm',
+    'Tu ra': 'Tụ đầu ra',
+    'Bien tro': 'Biến trở',
+    'Diode': 'Diode',
+    'LM2596': 'LM2596',
   };
 
   /// Chuyển đổi label từ backend sang tiếng Việt

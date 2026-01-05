@@ -64,8 +64,12 @@ class InferencePanel extends StatelessWidget {
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Hiển thị ảnh annotated từ backend endpoint nếu có
-                  if (result.hasAnnotatedImage == true) ...[
+                  // Prefer Cloudinary URL when available
+                  if (result.annotatedImageUrl != null &&
+                      result.annotatedImageUrl!.isNotEmpty) ...[
+                    _AnnotatedImage(imageUrl: result.annotatedImageUrl!),
+                    const SizedBox(height: 16),
+                  ] else if (result.hasAnnotatedImage == true) ...[
                     _AnnotatedImageFromEndpoint(
                       timestamp: result.timestamp.millisecondsSinceEpoch,
                     ),

@@ -1,0 +1,10 @@
+
+# Set dataset root to local Windows path
+path: C:/Users/LENOVO/Downloads/dataset_lm2596-20251229T055104Z-3-001/dataset_lm2596
+
+train: train/images
+val: valid/images
+
+nc: 11
+
+names: ['Tụ hoá vào','Tụ gốm (dưới)','Diode Schottky','IC LM2596','Tụ gốm cạnh IC','Trở cạnh IC','Cuộn cảm','Biến trở xanh','Trở cạnh biến trở','LED','Tụ hoá đầu ra']

@@ -48,6 +48,7 @@ class InferenceResponse(BaseModel):
   missingAreas: List[MissingArea] = Field(default_factory=list)
   detectedComponents: List[MissingArea] = Field(default_factory=list)
   missingComponentLabels: List[str] = Field(default_factory=list)
+  annotatedImageUrl: Optional[str] = None
   notes: Optional[str]
   boardName: str = "Unknown" 
 

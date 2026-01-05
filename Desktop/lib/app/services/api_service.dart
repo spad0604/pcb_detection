@@ -22,7 +22,8 @@ class ApiService {
       'file': await MultipartFile.fromFile(file.path, filename: fileName),
     });
     try {
-      final response = await _dio.post('/api/inference', data: formData);
+      // Use Cloudinary-enabled endpoint to get annotatedImageUrl in response.
+      final response = await _dio.post('/inferences', data: formData);
       return InferenceResult.fromJson(
         response.data as Map<String, dynamic>? ?? {},
       );

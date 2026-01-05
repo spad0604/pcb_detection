@@ -3,6 +3,7 @@ import json
 import os
 from datetime import datetime
 import logging
+import unicodedata
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -25,40 +26,51 @@ logger = logging.getLogger(__name__)
 class InferenceService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        
-        # Try multiple model paths (model nằm ngoài backend: ../data/artifacts/)
-        model_paths = [
-            Path(__file__).parent.parent.parent.parent / "data" / "artifacts" / "best.pt",  # Từ app/services/ lên 4 cấp
-            Path("../data/artifacts/best.pt"),  # Từ backend/ lên 1 cấp
-            Path("yolov8n.pt")
-        ]
-        
-        model_path = None
-        for path in model_paths:
-            if path.exists():
-                model_path = path
-                break
-        
-        if model_path and model_path.name == "best.pt":
-            logger.info(f"✓ Đã load model YOLO từ: {model_path.absolute()}")
-            self.model = YOLO(str(model_path))
-        else:
-            logger.warning("Không tìm thấy best.pt, dùng yolov8n.pt")
-            self.model = YOLO("yolov8n.pt")
-        
-        # Configure Cloudinary uploads
-        self._cloudinary_enabled = False
-        self._cloudinary_folder = os.getenv("CLOUDINARY_FOLDER", "pcb-inspector")
-        cloudinary_url = os.getenv("CLOUDINARY_URL")
-        if cloudinary_url and cloudinary is not None:
+
+        # Prefer the trained model shipped in artifacts_dir.
+        # Settings.artifacts_dir already resolves to Embedded/data/artifacts when available.
+        preferred_best = (self._settings.artifacts_dir / "best.pt").resolve()
+        fallback_best = (
+            Path(__file__).resolve().parents[3] / "data" / "artifacts" / "best.pt"
+        ).resolve()
+        model_candidates = [preferred_best, fallback_best, Path("yolov8n.pt")]
+
+        model_path: Optional[Path] = None
+        for candidate in model_candidates:
             try:
-                cloudinary.config(cloudinary_url=cloudinary_url)
-                self._cloudinary_enabled = True
-                logger.info("✓ Upload annotated image lên Cloudinary được bật")
-            except Exception as exc:
-                logger.warning("Không cấu hình Cloudinary: %s", exc)
-        elif cloudinary_url and cloudinary is None:
-            logger.warning("Đã đặt CLOUDINARY_URL nhưng chưa cài thư viện cloudinary")
+                if candidate.exists():
+                    model_path = candidate
+                    break
+            except Exception:
+                continue
+
+        if model_path is None:
+            logger.warning("Không tìm thấy model file, dùng yolov8n.pt")
+            self.model = YOLO("yolov8n.pt")
+        else:
+            logger.info(f"✓ Đã load model YOLO từ: {model_path}")
+            self.model = YOLO(str(model_path))
+
+        # Canonical labels expected from the trained model.
+        self._expected_component_labels = [
+            "Cuon cam",
+            "Tu ra",
+            "Bien tro",
+            "Diode",
+            "LM2596",
+        ]
+        self._label_alias_map = self._build_label_alias_map(self._expected_component_labels)
+
+        # Inference mode:
+        # - yolo (default): missing based on YOLO classes (presence/absence)
+        # - template: missing based on template component boxes (IoU/center matching)
+        self._inference_mode = os.getenv("PCB_INFERENCE_MODE", "yolo").strip().lower()
+
+        # User guarantees the input orientation is correct; do not rotate.
+        self._auto_rotate_enabled = False
+        
+        # Cloudinary upload disabled for conveyor belt speed optimization
+        self._cloudinary_enabled = False
              
         # Cache profile & SIFT data
         self._current_profile: Optional[BoardProfile] = None
@@ -68,6 +80,105 @@ class InferenceService:
         self._ref_kp = None 
         self._ref_des = None
         self._last_aligned_img: Optional[np.ndarray] = None  # Cache ảnh đã align để vẽ 
+
+    def _sift_inlier_score(self, img: np.ndarray) -> int:
+        """Return a robust score for how well `img` matches the reference (higher is better)."""
+        if self._ref_image_cache is None or self._ref_des is None or self._ref_kp is None:
+            return 0
+        try:
+            mask = self._create_pcb_mask(img)
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            kp, des = self._sift.detectAndCompute(gray, mask)
+            if des is None or kp is None or len(kp) < 5:
+                return 0
+
+            bf = cv2.BFMatcher()
+            matches = bf.knnMatch(self._ref_des, des, k=2)
+            good = []
+            for m, n in matches:
+                if m.distance < 0.75 * n.distance:
+                    good.append(m)
+            if len(good) < 8:
+                return len(good)
+
+            src_pts = np.float32([self._ref_kp[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+            dst_pts = np.float32([kp[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+            _, inliers = cv2.estimateAffinePartial2D(dst_pts, src_pts, method=cv2.RANSAC)
+            if inliers is None:
+                return len(good)
+            return int(inliers.sum())
+        except Exception:
+            return 0
+
+    def _select_best_orientation(self, img: np.ndarray) -> np.ndarray:
+        """Try all 4 orientations (0°, 90°, 180°, 270°) and pick the best match with reference."""
+        if self._ref_des is None or self._ref_kp is None or self._ref_image_cache is None:
+            return img
+
+        candidates = [
+            (img, 0),
+            (cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE), 90),
+            (cv2.rotate(img, cv2.ROTATE_180), 180),
+            (cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE), 270),
+        ]
+
+        best_img = img
+        best_score = -1
+        best_angle = 0
+
+        for candidate_img, angle in candidates:
+            score = self._sift_inlier_score(candidate_img)
+            if score > best_score:
+                best_score = score
+                best_img = candidate_img
+                best_angle = angle
+
+        logger.info("→ Chọn hướng %d° (SIFT inliers %d)", best_angle, best_score)
+        return best_img
+
+    def _normalize_label_key(self, raw: str) -> str:
+        """Normalize label text to a matching key (lowercase, no accents, no separators)."""
+        if not raw:
+            return ""
+        text = raw.strip().lower()
+        text = unicodedata.normalize("NFKD", text)
+        text = "".join(ch for ch in text if not unicodedata.combining(ch))
+        # unify separators
+        for sep in (" ", "_", "-", "."):
+            text = text.replace(sep, "")
+        return text
+
+    def _build_label_alias_map(self, canonical_labels: List[str]) -> dict[str, str]:
+        """Build map of normalized aliases -> canonical label."""
+        alias: dict[str, str] = {}
+        for label in canonical_labels:
+            alias[self._normalize_label_key(label)] = label
+
+        # Extra common aliases/synonyms
+        alias.update(
+            {
+                self._normalize_label_key("tuvao"): "Tu vao",
+                self._normalize_label_key("tu vao"): "Tu vao",
+                self._normalize_label_key("capinput"): "Tu vao",
+                self._normalize_label_key("cuoncam"): "Cuon cam",
+                self._normalize_label_key("cuon cam"): "Cuon cam",
+                self._normalize_label_key("inductor"): "Cuon cam",
+                self._normalize_label_key("tura"): "Tu ra",
+                self._normalize_label_key("tu ra"): "Tu ra",
+                self._normalize_label_key("capoutput"): "Tu ra",
+                self._normalize_label_key("bientro"): "Bien tro",
+                self._normalize_label_key("bien tro"): "Bien tro",
+                self._normalize_label_key("potentiometer"): "Bien tro",
+                self._normalize_label_key("diode"): "Diode",
+                self._normalize_label_key("lm2596"): "LM2596",
+            }
+        )
+        return alias
+
+    def _canonicalize_label(self, label: str) -> str:
+        """Return canonical label for known component classes, else original label."""
+        key = self._normalize_label_key(label)
+        return self._label_alias_map.get(key, label)
 
     def _create_pcb_mask(self, img: np.ndarray) -> np.ndarray:
         """Logic tạo mask giữ nguyên từ collab.py"""
@@ -162,15 +273,13 @@ class InferenceService:
         return self._analyze(img)
 
     async def analyze_and_render(
-        self, img: np.ndarray
+        self, img: np.ndarray, upload_cloudinary: bool = False
     ) -> Tuple[InferenceResponse, Optional[bytes], Optional[str]]:
-        """Chạy inference + render boxes + trả ảnh trực tiếp (không upload Cloudinary)."""
+        """Chạy inference + render boxes (Cloudinary upload disabled for speed)."""
         result = await self.analyze_image(img)
         annotated = self.draw_detection_boxes(img, result)
         annotated_bytes = annotated if annotated else None
-        # Tắt upload Cloudinary để giảm thời gian response
-        annotated_url = None
-        return result, annotated_bytes, annotated_url
+        return result, annotated_bytes, None
 
     def _align_image(self, target_img: np.ndarray) -> np.ndarray:
         """
@@ -184,13 +293,14 @@ class InferenceService:
         h_tgt, w_tgt = target_img.shape[:2]
         logger.info(f"Alignment: Ref={w_ref}x{h_ref}, Target={w_tgt}x{h_tgt}")
         
-        # 1. Rotation logic
-        if (w_ref > h_ref) and (h_tgt > w_tgt):
-            target_img = cv2.rotate(target_img, cv2.ROTATE_90_CLOCKWISE)
-            logger.info("→ Đã xoay ảnh 90° (portrait→landscape)")
-        elif (h_ref > w_ref) and (w_tgt > h_tgt):
-            target_img = cv2.rotate(target_img, cv2.ROTATE_90_CLOCKWISE)
-            logger.info("→ Đã xoay ảnh 90° (landscape→portrait)")
+        # 1. Optional rotation logic
+        if self._auto_rotate_enabled:
+            if (w_ref > h_ref) and (h_tgt > w_tgt):
+                target_img = cv2.rotate(target_img, cv2.ROTATE_90_CLOCKWISE)
+                logger.info("→ Đã xoay ảnh 90° (portrait→landscape)")
+            elif (h_ref > w_ref) and (w_tgt > h_tgt):
+                target_img = cv2.rotate(target_img, cv2.ROTATE_90_CLOCKWISE)
+                logger.info("→ Đã xoay ảnh 90° (landscape→portrait)")
 
         # 2. SIFT Matching
         mask_tgt = self._create_pcb_mask(target_img)
@@ -267,24 +377,17 @@ class InferenceService:
         """Phân tích PCB và phân biệt linh kiện đủ/thiếu dựa trên template."""
         logger.info(f"Input image shape: {image.shape}")
         
-        # Xoay ảnh 90° nếu đang nằm ngang (landscape) để chuyển về dọc (portrait)
-        h, w = image.shape[:2]
-        if w > h:
-            image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
-            logger.info(f"→ Đã xoay ảnh đầu vào 90° từ landscape {w}x{h} sang portrait {image.shape[1]}x{image.shape[0]}")
+        # User guarantees input image is already in correct orientation - no auto-rotation.
 
         if self._current_profile is None:
             self._load_active_profile()
 
-        # Align ảnh về reference để so sánh với template chính xác hơn
-        aligned_image = self._align_image(image) if self._current_profile else image
-
-        # Detect bằng YOLO trên ảnh đã align
-        results = self.model(aligned_image, verbose=False, conf=0.25)
+        # Direct YOLO detection without alignment for speed (YOLO-first mode)
+        results = self.model(image, verbose=False, conf=0.25)
         detected_count = len(results[0].boxes) if results else 0
         logger.info(f"YOLO detected {detected_count} components")
 
-        self._last_aligned_img = aligned_image
+        self._last_aligned_img = image
 
         detected_components: List[MissingArea] = []
         detected_boxes: List[List[float]] = []
@@ -294,7 +397,8 @@ class InferenceService:
                 x_center, y_center, width, height = box.xywhn[0].tolist()
                 conf = float(box.conf[0])
                 class_id = int(box.cls[0])
-                class_name = self.model.names.get(class_id, "components")
+                raw_name = self.model.names.get(class_id, "components")
+                class_name = self._canonicalize_label(str(raw_name))
 
                 detected_boxes.append([x_center, y_center, width, height])
                 detected_components.append(
@@ -316,7 +420,23 @@ class InferenceService:
         iou_threshold = 0.3
         unmatched_indices = set(range(len(detected_boxes)))
 
-        if template_components:
+        # Prefer YOLO class-based missing by default.
+        if self._inference_mode != "template":
+            detected_labels = {c.description for c in detected_components if c.description}
+            missing_labels_by_presence = [
+                label for label in self._expected_component_labels if label not in detected_labels
+            ]
+            missing_areas = [
+                MissingArea(
+                    id=f"missing_{self._normalize_label_key(label)}",
+                    description=label,
+                    confidence=0.5,
+                    bbox=None,
+                )
+                for label in missing_labels_by_presence
+            ]
+
+        elif template_components:
             logger.info(
                 "Template có %d components, detected %d",
                 len(template_components),
@@ -359,7 +479,7 @@ class InferenceService:
                 missing_areas.append(
                     MissingArea(
                         id=f"missing_{component.id}",
-                        description=component.label,
+                        description=self._canonicalize_label(component.label),
                         confidence=max(0.1, 1.0 - max(best_iou, 0.0)),
                         bbox=BoundingBox(
                             x=tx1,
@@ -370,8 +490,20 @@ class InferenceService:
                     )
                 )
         else:
-            # Không có template → fallback như logic cũ
-            missing_areas = detected_components.copy()
+            # Không có template (template-mode) → fallback sang presence/absence.
+            detected_labels = {c.description for c in detected_components if c.description}
+            missing_labels_by_presence = [
+                label for label in self._expected_component_labels if label not in detected_labels
+            ]
+            missing_areas = [
+                MissingArea(
+                    id=f"missing_{self._normalize_label_key(label)}",
+                    description=label,
+                    confidence=0.5,
+                    bbox=None,
+                )
+                for label in missing_labels_by_presence
+            ]
 
         is_defective = len(missing_areas) > 0
         avg_confidence = (
@@ -382,7 +514,7 @@ class InferenceService:
         board_name = self._current_profile.boardName if self._current_profile else "PCB"
         missing_labels = [area.description for area in missing_areas if area.description]
 
-        if template_components:
+        if template_components and self._inference_mode == "template":
             note_text = (
                 f"Thiếu {len(missing_areas)} / {len(template_components)} linh kiện."
                 if is_defective
@@ -390,7 +522,11 @@ class InferenceService:
             )
         else:
             note_text = (
-                f"Phát hiện {len(missing_areas)} lỗi/khuyết tật." if is_defective else "PCB đạt chất lượng."
+                (
+                    f"Thiếu {len(missing_areas)} linh kiện theo danh sách chuẩn: {', '.join(missing_labels)}"
+                    if is_defective
+                    else "PCB OK - Đã phát hiện đủ các linh kiện chuẩn."
+                )
             )
 
         return InferenceResponse(
@@ -406,12 +542,10 @@ class InferenceService:
 
     def draw_detection_boxes(self, img: np.ndarray, result: InferenceResponse) -> bytes:
         """Vẽ bounding boxes lên ảnh và trả về JPEG bytes."""
-        # Sử dụng ảnh đã align (sau xoay + warp) thay vì ảnh gốc
-        aligned = self._last_aligned_img if self._last_aligned_img is not None else img
-        if aligned is None or result is None:
+        if img is None or result is None:
             return b""
         
-        vis = aligned.copy()
+        vis = img.copy()
         h, w = vis.shape[:2]
         
         detected_components = getattr(result, "detectedComponents", [])
