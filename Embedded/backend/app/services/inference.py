@@ -51,13 +51,14 @@ class InferenceService:
             logger.info(f"✓ Đã load model YOLO từ: {model_path}")
             self.model = YOLO(str(model_path))
 
-        # Canonical labels expected from the trained model.
+        # Canonical labels expected from the trained model (6 components).
         self._expected_component_labels = [
-            "Cuon cam",
+            "Tu vao",
             "Tu ra",
             "Bien tro",
-            "Diode",
             "LM2596",
+            "Cuon cam",
+            "Diode",
         ]
         self._label_alias_map = self._build_label_alias_map(self._expected_component_labels)
 

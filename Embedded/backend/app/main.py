@@ -78,6 +78,15 @@ async def shutdown_event() -> None:
 async def health_check() -> dict:
     return {"status": "ok", "mode": "YOLO_Alignment"}
 
+@app.post("/api/cache/clear")
+async def clear_cache() -> dict:
+    """Clear all caches - useful after code changes."""
+    _status_cache["data"] = None
+    _status_cache["time"] = 0.0
+    _snapshot_cache["data"] = None
+    _snapshot_cache["time"] = 0.0
+    return {"status": "cache_cleared"}
+
 # INFERENCE 
 @app.post("/api/inference")
 async def run_inference(file: UploadFile = File(...)) -> dict:
@@ -242,7 +251,10 @@ async def get_line_last_inference() -> dict:
   result = line_controller.get_last_inference()
   if not result:
     raise HTTPException(status_code=404, detail="Chưa có inference nào từ băng tải")
-  return result.dict()
+  # Lấy annotated frame để set hasAnnotatedImage
+  annotated_bytes = line_controller.get_annotated_frame()
+  annotated_url = None  # Không dùng Cloudinary nữa
+  return _format_inference_response(result, annotated_bytes, annotated_url)
 
 
 @app.get("/api/line/last_snapshot")
@@ -264,10 +276,15 @@ async def get_line_last_snapshot() -> dict:
     captured_at = datetime.utcfromtimestamp(timestamp).isoformat() + "Z"
 
   result = snapshot.get("result")
+  # Format inference với hasAnnotatedImage bên trong
+  inference_data = None
+  if result:
+    inference_data = _format_inference_response(result, annotated_frame, None)
+  
   response = {
     "capturedAt": captured_at,
     "hasAnnotatedImage": annotated_frame is not None,
-    "inference": result.dict() if result else None,
+    "inference": inference_data,
   }
   
   _snapshot_cache["data"] = response

@@ -1,13 +1,7 @@
 /// Mapping các label linh kiện từ backend sang tiếng Việt
 class ComponentLabels {
   static const Map<String, String> _labelMap = {
-    'CAP_INPUT': 'Tụ hóa đầu vào',
-    'CAP_OUTPUT': 'Tụ hóa đầu ra',
-    'LM2596_CHIP': 'Chip LM2596',
-    'TRIMPOT': 'Biến trở xanh',
-    'INDUCTOR_470': 'Cuộn cảm 470µH',
-
-    // New YOLO canonical labels
+    'Tu vao': 'Tụ đầu vào',
     'Cuon cam': 'Cuộn cảm',
     'Tu ra': 'Tụ đầu ra',
     'Bien tro': 'Biến trở',
