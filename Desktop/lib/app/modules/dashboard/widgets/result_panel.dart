@@ -113,42 +113,6 @@ class ResultPanel extends StatelessWidget {
                         ),
                       ),
                     ),
-                  if (analysis.hasAnnotatedImage == true) 
-                    const SizedBox(height: 16),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(24),
-                    decoration: BoxDecoration(
-                      color: color.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: color, width: 2),
-                    ),
-                    child: Column(
-                      children: [
-                        Icon(icon, size: 64, color: color),
-                        const SizedBox(height: 16),
-                        Text(
-                          text,
-                          style: TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
-                            color: color,
-                          ),
-                        ),
-                        if (analysis.notes != null) ...[
-                          const SizedBox(height: 12),
-                          Text(
-                            analysis.notes!,
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: Colors.grey.shade700,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
                 ],
               ); // Correctly ends the Column
             }), // Correctly ends the Obx

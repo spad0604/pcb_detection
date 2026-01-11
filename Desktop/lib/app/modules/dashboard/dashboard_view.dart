@@ -13,15 +13,6 @@ class DashboardView extends GetView<DashboardController> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Làm mới camera',
-            onPressed: controller.refreshLiveFrame,
-          ),
-        ],
-      ),
       body: Column(
         children: [
           const UniversityHeader(),

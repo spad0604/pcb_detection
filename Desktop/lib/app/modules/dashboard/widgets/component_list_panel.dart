@@ -42,34 +42,92 @@ class ComponentListPanel extends StatelessWidget {
                 componentStatus[component] = !missingComponents.contains(component);
               }
               
-              return Column(
-                children: allComponents.map((componentKey) {
+              return GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  childAspectRatio: 3.5,
+                  crossAxisSpacing: 12,
+                  mainAxisSpacing: 12,
+                ),
+                itemCount: allComponents.length,
+                itemBuilder: (context, index) {
+                  final componentKey = allComponents[index];
                   final isPresent = componentStatus[componentKey] ?? false;
                   final componentName = ComponentLabels.toVietnamese(componentKey);
+                  final componentIcon = ComponentLabels.getIcon(componentKey);
+                  final componentColor = ComponentLabels.getColor(componentKey);
+                  final imagePath = ComponentLabels.getImagePath(componentKey);
+                  final hasImage = ComponentLabels.hasImage(componentKey);
                   
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: Colors.grey.shade200,
+                        width: 1,
+                      ),
+                    ),
                     child: Row(
                       children: [
-                        Icon(
-                          isPresent ? Icons.check_circle : Icons.cancel,
-                          color: isPresent ? Colors.green : Colors.red,
-                          size: 28,
+                        // Ảnh hoặc Icon linh kiện
+                        Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: hasImage ? Colors.white : componentColor.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: componentColor.withOpacity(0.3),
+                              width: 1,
+                            ),
+                          ),
+                          child: hasImage
+                              ? ClipRRect(
+                                  borderRadius: BorderRadius.circular(5),
+                                  child: Image.asset(
+                                    imagePath!,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (context, error, stackTrace) {
+                                      return Icon(
+                                        componentIcon,
+                                        color: componentColor,
+                                        size: 20,
+                                      );
+                                    },
+                                  ),
+                                )
+                              : Icon(
+                                  componentIcon,
+                                  color: componentColor,
+                                  size: 20,
+                                ),
                         ),
-                        const SizedBox(width: 12),
+                        const SizedBox(width: 8),
                         Expanded(
                           child: Text(
                             componentName,
                             style: const TextStyle(
-                              fontSize: 16,
+                              fontSize: 14,
                               fontWeight: FontWeight.w500,
                             ),
+                            overflow: TextOverflow.ellipsis,
                           ),
+                        ),
+                        const SizedBox(width: 4),
+                        // Trạng thái đủ/thiếu
+                        Icon(
+                          isPresent ? Icons.check_circle : Icons.cancel,
+                          color: isPresent ? Colors.green : Colors.red,
+                          size: 22,
                         ),
                       ],
                     ),
                   );
-                }).toList(),
+                },
               );
             }),
           ],
