@@ -29,11 +29,23 @@ class ResultPanel extends StatelessWidget {
             const SizedBox(height: 16),
             Obx(() {
               final analysis = controller.liveAnalysis.value;
-              
-              // Debug: In ra console để kiểm tra
-              if (analysis != null) {
-                print('🔍 DEBUG: hasAnnotatedImage = ${analysis.hasAnnotatedImage}');
-                print('🔍 DEBUG: annotatedImageUrl = ${analysis.annotatedImageUrl}');
+
+              String _withCacheBuster(String url, int ts) {
+                final separator = url.contains('?') ? '&' : '?';
+                return '$url${separator}t=$ts';
+              }
+
+              String _resolveAnnotatedUrl() {
+                final baseUrl = controller.apiService.baseUrl;
+                final raw = analysis?.annotatedImageUrl;
+                if (raw != null && raw.trim().isNotEmpty) {
+                  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+                    return raw;
+                  }
+                  final path = raw.startsWith('/') ? raw : '/$raw';
+                  return '$baseUrl$path';
+                }
+                return '$baseUrl/api/stream/annotated';
               }
 
               if (analysis == null) {
@@ -65,6 +77,8 @@ class ResultPanel extends StatelessWidget {
               final color = isDefective ? Colors.red : Colors.green;
               final icon = isDefective ? Icons.error : Icons.check_circle;
               final text = isDefective ? 'THIẾU LINH KIỆN' : 'ĐẦY ĐỦ';
+              final timestamp = analysis.timestamp.millisecondsSinceEpoch;
+              final annotatedUrl = _withCacheBuster(_resolveAnnotatedUrl(), timestamp);
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -75,7 +89,8 @@ class ResultPanel extends StatelessWidget {
                       child: Container(
                         constraints: const BoxConstraints(maxHeight: 400),
                         child: Image.network(
-                          '${controller.apiService.baseUrl}/api/stream/annotated',
+                          annotatedUrl,
+                          key: ValueKey(timestamp),
                           fit: BoxFit.contain,
                           gaplessPlayback: true,
                           filterQuality: FilterQuality.medium,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import logging
 import os
 import threading
@@ -47,6 +48,11 @@ class LineController:
         self.last_annotated_frame: bytes | None = None
         self.last_annotated_url: str | None = None
         self.annotated_frame_timestamp: float = 0.0  # Timestamp khi có detection
+        # Store a small history so FE can request the exact annotated image for a given inference.
+        # This prevents mismatches where result is new but image is from a previous inference.
+        self._annotated_store: dict[str, bytes] = {}
+        self._annotated_order: deque[str] = deque(maxlen=20)
+        self.last_annotated_id: str | None = None
         self.frame_sample_count = 3
 
     # ------------------------------------------------------------------
@@ -107,6 +113,11 @@ class LineController:
         with self._lock:
             return self.last_annotated_frame
 
+    def get_annotated_frame_by_id(self, annotated_id: str) -> bytes | None:
+        """Trả về annotated frame theo id (ms since epoch) nếu còn trong cache."""
+        with self._lock:
+            return self._annotated_store.get(annotated_id)
+
     def get_last_snapshot(self) -> dict[str, Any] | None:
         """Lấy snapshot detection mới nhất gồm ảnh + kết quả."""
         with self._lock:
@@ -124,13 +135,28 @@ class LineController:
         result: InferenceResponse,
         annotated_frame: bytes | None,
         annotated_url: str | None,
-    ) -> None:
+    ) -> str | None:
         """Cập nhật cache kết quả detection gần nhất để FE đọc lại."""
         with self._lock:
             self.last_result = result
             self.last_annotated_frame = annotated_frame
-            self.last_annotated_url = annotated_url
+            local_url: str | None = None
+            if annotated_frame is not None:
+                annotated_id = str(int(time.time() * 1000))
+                self._annotated_store[annotated_id] = annotated_frame
+                self._annotated_order.append(annotated_id)
+                # Evict oldest if needed
+                while len(self._annotated_order) > self._annotated_order.maxlen:
+                    oldest = self._annotated_order.popleft()
+                    self._annotated_store.pop(oldest, None)
+                self.last_annotated_id = annotated_id
+                local_url = f"/api/stream/annotated?id={annotated_id}"
+
+            # Prefer explicit annotated_url (e.g., external), else local deterministic URL.
+            self.last_annotated_url = annotated_url or local_url
             self.annotated_frame_timestamp = time.time()
+
+            return self.last_annotated_url
 
     def trigger_manual_detection(self) -> bool:
         """Trigger detection thủ công từ UI (giả lập EVENT:BOARD_AT_CAMERA)."""

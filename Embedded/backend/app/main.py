@@ -97,22 +97,23 @@ async def run_inference(file: UploadFile = File(...)) -> dict:
     
     # Phân tích từ numpy array (không dùng file.read() nữa)
     result, annotated_bytes, annotated_url = await inference_service.analyze_and_render(img)
-    # Lưu annotated bytes vào line_controller để FE lấy qua /api/stream/annotated
-    line_controller.update_last_detection(result, annotated_bytes, annotated_url)
+    # Lưu annotated bytes vào line_controller và nhận URL nội bộ theo từng inference
+    annotated_url = line_controller.update_last_detection(result, annotated_bytes, annotated_url)
     return _format_inference_response(result, annotated_bytes, annotated_url)
 
 
 @app.post("/inferences")
 async def run_inferences_cloudinary(file: UploadFile = File(...)) -> dict:
-    """Upload image, run inference, upload annotated image to Cloudinary, return URL."""
+    """Upload image, run inference, return annotated image via local endpoint (no Cloudinary)."""
     contents = await file.read()
     nparr = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
+    # Cloudinary is intentionally disabled (speed + local-only).
     result, annotated_bytes, annotated_url = await inference_service.analyze_and_render(
-        img, upload_cloudinary=True
+        img, upload_cloudinary=False
     )
-    line_controller.update_last_detection(result, annotated_bytes, annotated_url)
+    annotated_url = line_controller.update_last_detection(result, annotated_bytes, annotated_url)
     return _format_inference_response(result, annotated_bytes, annotated_url)
 
 
@@ -130,12 +131,34 @@ async def get_stream_frame() -> Response:
 
 
 @app.get("/api/stream/annotated")
-async def get_annotated_frame() -> Response:
-  """Trả về ảnh snapshot detection mới nhất (không ảnh thì trả placeholder)."""
+async def get_annotated_frame(id: str | None = None) -> Response:
+  """Trả về ảnh annotated theo id (nếu có), hoặc ảnh detection mới nhất."""
+  if id:
+    annotated = line_controller.get_annotated_frame_by_id(id)
+    if annotated:
+      return Response(
+        content=annotated,
+        media_type="image/jpeg",
+        headers={
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+          "Pragma": "no-cache",
+          "Expires": "0",
+        },
+      )
+    raise HTTPException(status_code=404, detail="Annotated frame id not found")
+
   snapshot = line_controller.get_last_snapshot()
   annotated = snapshot["frame"] if snapshot else None
   if annotated:
-    return Response(content=annotated, media_type="image/jpeg")
+    return Response(
+      content=annotated,
+      media_type="image/jpeg",
+      headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+      },
+    )
 
   frame = camera_service.get_placeholder_frame()
   return Response(content=frame, media_type="image/jpeg")
@@ -186,7 +209,7 @@ async def analyze_stream_frame() -> dict:
     raise HTTPException(status_code=404, detail="Không có frame camera")
 
   result, annotated_bytes, annotated_url = await inference_service.analyze_and_render(frame)
-  line_controller.update_last_detection(result, annotated_bytes, annotated_url)
+  annotated_url = line_controller.update_last_detection(result, annotated_bytes, annotated_url)
   return _format_inference_response(result, annotated_bytes, annotated_url)
 
 
@@ -251,9 +274,9 @@ async def get_line_last_inference() -> dict:
   result = line_controller.get_last_inference()
   if not result:
     raise HTTPException(status_code=404, detail="Chưa có inference nào từ băng tải")
-  # Lấy annotated frame để set hasAnnotatedImage
-  annotated_bytes = line_controller.get_annotated_frame()
-  annotated_url = None  # Không dùng Cloudinary nữa
+  snapshot = line_controller.get_last_snapshot()
+  annotated_bytes = snapshot["frame"] if snapshot else None
+  annotated_url = snapshot["frameUrl"] if snapshot else None
   return _format_inference_response(result, annotated_bytes, annotated_url)
 
 
