@@ -18,19 +18,41 @@ class ComponentListPanel extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Row(
-              children: [
-                Icon(Icons.list_alt, size: 24),
-                SizedBox(width: 8),
-                Text(
-                  'Danh sách Linh kiện',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
             Obx(() {
-              final analysis = controller.liveAnalysis.value;
+              final analysis = controller.currentAnalysis;
+              final hasResult = analysis != null;
+              final isDefective = analysis?.isDefective ?? false;
+
+              final title = hasResult
+                  ? (isDefective ? 'Mạch thiếu linh kiện' : 'Đầy đủ linh kiện')
+                  : '';
+              final titleColor = hasResult
+                  ? (isDefective ? Colors.red : Colors.green)
+                  : Colors.black87;
+
+              return Row(
+                children: [
+                  Icon(
+                    Icons.list_alt,
+                    size: 24,
+                    color: hasResult ? titleColor : null,
+                  ),
+                  const SizedBox(width: 8),
+                  if (title.isNotEmpty)
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        color: titleColor,
+                      ),
+                    ),
+                ],
+              );
+            }),
+            const SizedBox(height: 12),
+            Obx(() {
+              final analysis = controller.currentAnalysis;
               
               // Lấy danh sách tất cả linh kiện
               final allComponents = ComponentLabels.getAllOriginalLabels();

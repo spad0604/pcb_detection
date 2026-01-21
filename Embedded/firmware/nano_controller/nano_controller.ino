@@ -18,7 +18,7 @@ const int TRIGGER_LEVEL = LOW;
 
 // --- Cấu hình Thời gian ---
 constexpr uint8_t CONVEYOR_SPEED = 255; 
-const unsigned long CAMERA_STOP_DELAY = 250; // <--- THÊM: Thời gian trễ 300ms
+const unsigned long CAMERA_STOP_DELAY = 250; // Trễ để vật nằm giữa camera
 
 // ---------------- Trạng thái Servo (State Machine) ----------------
 enum ServoState {
@@ -34,13 +34,11 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 Servo rejectServo;
 
 bool waitingForResult = false;
-bool pendingReject = false;      
 bool conveyorRunning = true;
 bool boardPassedCamera = false;
 
-// --- THÊM: Biến quản lý việc dừng trễ ---
-bool stoppingForCamera = false;       // Cờ báo hiệu đang đếm lùi để dừng
-unsigned long cameraStopTimer = 0;    // Timer đếm lùi
+bool stoppingForCamera = false;       
+unsigned long cameraStopTimer = 0;    
 
 // Emergency Stop
 bool emergencyStopActive = false;  
@@ -52,22 +50,58 @@ const unsigned long COOLDOWN_DELAY = 5000;
 uint32_t okCount = 0;
 uint32_t ngCount = 0;
 
+// ---------------- Hàng đợi kết quả (FIFO) ----------------
+// Lý do: nếu có nhiều mạch chạy liên tiếp, kết quả OK/NG cần được giữ theo thứ tự
+// và sẽ được "consume" khi mạch đi tới cảm biến gạt (SENSOR_REJ).
+constexpr uint8_t RESULT_QUEUE_SIZE = 8;
+bool resultQueue[RESULT_QUEUE_SIZE]; // true = NG (cần gạt), false = OK (không gạt)
+uint8_t resultHead = 0;
+uint8_t resultTail = 0;
+uint8_t resultCount = 0;
+
+bool enqueueResult(bool shouldReject) {
+  if (resultCount >= RESULT_QUEUE_SIZE) {
+    // Overflow hiếm khi xảy ra; log event để debug.
+    // Chọn drop oldest để hệ thống tiếp tục chạy.
+    resultHead = (resultHead + 1) % RESULT_QUEUE_SIZE;
+    resultCount--;
+    sendEvent("QUEUE_OVERFLOW_DROP_OLDEST");
+  }
+  resultQueue[resultTail] = shouldReject;
+  resultTail = (resultTail + 1) % RESULT_QUEUE_SIZE;
+  resultCount++;
+  return true;
+}
+
+bool dequeueResult(bool &shouldReject) {
+  if (resultCount == 0) return false;
+  shouldReject = resultQueue[resultHead];
+  resultHead = (resultHead + 1) % RESULT_QUEUE_SIZE;
+  resultCount--;
+  return true;
+}
+
 // ---------------- Các hàm hỗ trợ ----------------
 
 void sendEvent(String event) { Serial.println("EVENT:" + event); }
 
+// Cập nhật màn hình LCD
+void updateLcd() {
+  lcd.setCursor(0, 0); 
+  lcd.print("OK: "); lcd.print(okCount);
+  lcd.print("                "); // Xóa ký tự thừa
+  lcd.setCursor(0, 1); 
+  lcd.print("NG: "); lcd.print(ngCount);
+  lcd.print("                "); // Xóa ký tự thừa
+}
+
 void setConveyor(bool run) {
   conveyorRunning = run;
   if (run) {
-    analogWrite(CONVEYOR_PIN, 0); // Kích mức thấp
+    analogWrite(CONVEYOR_PIN, 0); // Kích mức thấp (tùy relay)
   } else {
     analogWrite(CONVEYOR_PIN, 255);
   }
-}
-
-void updateLcd() {
-  lcd.setCursor(0, 0); lcd.print("OK: "); lcd.print(okCount); lcd.print("      ");
-  lcd.setCursor(0, 1); lcd.print("NG: "); lcd.print(ngCount); lcd.print("      ");
 }
 
 bool isSensorTriggered(int pin) {
@@ -81,21 +115,22 @@ bool isSensorTriggered(int pin) {
 
 void applyResult(bool isOk) {
   if (emergencyStopActive) return;
-
   if (!waitingForResult) return;
+
   waitingForResult = false;
   boardPassedCamera = true;
   cooldownTimer = millis();
 
   if (isOk) {
     okCount++;
-    pendingReject = false; 
+    enqueueResult(false);
     sendEvent("RESUME_OK");
   } else {
     ngCount++;
-    pendingReject = true;  
+    enqueueResult(true);
     sendEvent("RESUME_NG");
   }
+  
   updateLcd();
   
   if (!emergencyStopActive) {
@@ -108,15 +143,15 @@ void processCommand(String line) {
   if (line == "CMD:RESULT:OK") applyResult(true);
   else if (line == "CMD:RESULT:NG") applyResult(false);
   else if (line == "CMD:START") {
-    if (emergencyStopActive) {
-       emergencyStopActive = false; 
-    }
+    if (emergencyStopActive) emergencyStopActive = false; 
     setConveyor(true);
   }
   else if (line == "CMD:STOP") setConveyor(false);
   else if (line == "CMD:RESET") {
-    okCount = 0; ngCount = 0; updateLcd();
-    stoppingForCamera = false; // Reset cờ dừng trễ
+    okCount = 0; ngCount = 0; 
+    lcd.clear();
+    updateLcd();
+    stoppingForCamera = false;
     sendEvent("RESET_DONE");
   }
 }
@@ -132,11 +167,25 @@ void handleServoLogic() {
 
   switch (currentServoState) {
     case SERVO_IDLE:
-      if (pendingReject && isSensorTriggered(SENSOR_REJ)) {
+      if (isSensorTriggered(SENSOR_REJ)) {
         sendEvent("BOARD_AT_REJECT");
-        rejectServo.write(SERVO_PUSH_ANGLE);
-        servoTimer = millis();              
-        currentServoState = SERVO_PUSHING;   
+
+        bool shouldReject = false;
+        bool hasDecision = dequeueResult(shouldReject);
+        if (!hasDecision) {
+          // Có board tới reject nhưng chưa có kết quả tương ứng (mismatch timing).
+          // Mặc định không gạt để tránh gạt nhầm.
+          sendEvent("REJECT_NO_DECISION");
+          break;
+        }
+
+        if (shouldReject) {
+          rejectServo.write(SERVO_PUSH_ANGLE);
+          servoTimer = millis();
+          currentServoState = SERVO_PUSHING;
+        } else {
+          sendEvent("PASS_OK");
+        }
       }
       break;
 
@@ -150,13 +199,14 @@ void handleServoLogic() {
 
     case SERVO_RETURNING:
       if (millis() - servoTimer >= SERVO_SWEEP_DURATION) {
-        pendingReject = false;
         currentServoState = SERVO_IDLE;      
         sendEvent("REJECT_DONE");
       }
       break;
   }
 }
+
+// ---------------- Setup & Loop ----------------
 
 void setup() {
   Serial.begin(115200);
@@ -177,64 +227,62 @@ void setup() {
 }
 
 void loop() {
-  // 1. Đọc lệnh Serial
+  // 1. Nhận lệnh từ Serial
   if (Serial.available()) {
     processCommand(Serial.readStringUntil('\n'));
   }
 
-  // 2. Xử lý Nút dừng khẩn cấp
+  // 2. Xử lý Dừng khẩn cấp (Emergency Stop)
   bool currentEmergencyState = digitalRead(EMERGENCY_STOP);
   if (lastEmergencyState == HIGH && currentEmergencyState == LOW) {
-    unsigned long dbStart = millis();
-    while(millis() - dbStart < 50); 
-    
+    delay(50); // Debounce nhanh
     if (digitalRead(EMERGENCY_STOP) == LOW) { 
       emergencyStopActive = !emergencyStopActive; 
       
+      lcd.clear(); // XÓA MÀN HÌNH MỖI KHI THAY ĐỔI TRẠNG THÁI
+
       if (emergencyStopActive) {
         setConveyor(false);
-        stoppingForCamera = false; // Hủy bỏ quá trình đếm ngược nếu có
+        stoppingForCamera = false; 
         sendEvent("EMERGENCY_STOP");
+        
         lcd.setCursor(0, 0); lcd.print("  DUNG KHAN!  ");
         lcd.setCursor(0, 1); lcd.print("Bam de chay lai");
         
         rejectServo.write(SERVO_REST_ANGLE);
         currentServoState = SERVO_IDLE;
-
       } else {
+        // TRẠNG THÁI BÌNH THƯỜNG TRỞ LẠI
         setConveyor(true);
         sendEvent("EMERGENCY_RESUME");
-        updateLcd(); 
+        updateLcd(); // Vẽ lại OK/NG sau khi đã lcd.clear()
       }
     }
   }
   lastEmergencyState = currentEmergencyState;
 
-  // 3. Xử lý Servo
+  // 3. Xử lý Servo (nếu không dừng khẩn)
   handleServoLogic();
 
-  // 4. Xử lý Sensor Camera (Logic MỚI)
+  // 4. Xử lý Cảm biến Camera
   if (!emergencyStopActive) {
-    
-    // Đọc cảm biến
     bool cameraSensorActive = isSensorTriggered(SENSOR_CAM);
 
-    // [A] Phát hiện vật lần đầu -> Bắt đầu đếm ngược 300ms
+    // Phát hiện vật: Bắt đầu đếm trễ để dừng đúng tâm
     if (!waitingForResult && !boardPassedCamera && !stoppingForCamera && conveyorRunning && cameraSensorActive) {
       stoppingForCamera = true;
       cameraStopTimer = millis();
-      // LƯU Ý: Không setConveyor(false) ở đây, để nó chạy tiếp
     }
 
-    // [B] Đã đếm đủ 300ms -> Dừng băng tải và gọi Camera chụp
+    // Khi đủ thời gian trễ: Dừng băng tải và báo cho Python chụp ảnh
     if (stoppingForCamera && (millis() - cameraStopTimer >= CAMERA_STOP_DELAY)) {
-      setConveyor(false);       // Dừng băng tải
-      stoppingForCamera = false; // Reset cờ đếm
-      waitingForResult = true;   // Chuyển sang trạng thái đợi Python
+      setConveyor(false);       
+      stoppingForCamera = false; 
+      waitingForResult = true;   
       sendEvent("BOARD_AT_CAMERA");
     }
     
-    // [C] Logic Cool-down sau khi xong (tránh chụp lặp lại vật cũ)
+    // Cooldown để tránh cảm biến bị kích hoạt liên tục bởi cùng 1 vật
     if (boardPassedCamera && cooldownTimer > 0 && (millis() - cooldownTimer >= COOLDOWN_DELAY)) {
       boardPassedCamera = false;
       cooldownTimer = 0;
@@ -242,13 +290,11 @@ void loop() {
     }
   }
 
-  // 5. Gửi Heartbeat
+  // 5. Gửi Status định kỳ (Heartbeat)
   if (millis() - lastHeartbeat >= 2000) {
     lastHeartbeat = millis();
     Serial.print("STATUS:OK="); Serial.print(okCount);
     Serial.print(",NG="); Serial.print(ngCount);
-    Serial.print(" | CAM:"); Serial.print(digitalRead(SENSOR_CAM));
-    Serial.print(" REJ:"); Serial.print(digitalRead(SENSOR_REJ));
     Serial.print(" | EMERGENCY:"); Serial.println(emergencyStopActive ? "ACTIVE" : "NORMAL");
   }
 }

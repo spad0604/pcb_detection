@@ -40,24 +40,37 @@ class VideoStreamPanel extends StatelessWidget {
                   onPressed: () => controller.refreshLiveFrame(),
                   icon: const Icon(Icons.refresh_rounded),
                 ),
+                IconButton(
+                  tooltip: 'Xoay video 90°',
+                  onPressed: controller.rotateVideoClockwise,
+                  icon: const Icon(Icons.rotate_right_rounded),
+                ),
               ],
             ),
             const SizedBox(height: 12),
             ClipRRect(
               borderRadius: BorderRadius.circular(12),
-              child: AspectRatio(
-                aspectRatio: 16 / 9,
-                child: Obx(() {
-                  final Uint8List? bytes = controller.liveFrame.value;
-                  if (!controller.liveEnabled.value) {
-                    return _buildOverlay(context, 'Stream tạm dừng');
-                  }
-                  if (bytes == null) {
-                    return _buildOverlay(context, 'Đang chờ camera...');
-                  }
-                  return _VideoCanvas(frame: bytes);
-                }),
-              ),
+              child: Obx(() {
+                final quarterTurns = controller.videoQuarterTurns.value;
+                final aspectRatio = (quarterTurns % 2 == 1) ? (9 / 16) : (16 / 9);
+                final Uint8List? bytes = controller.liveFrame.value;
+                if (!controller.liveEnabled.value) {
+                  return AspectRatio(
+                    aspectRatio: aspectRatio,
+                    child: _buildOverlay(context, 'Stream tạm dừng'),
+                  );
+                }
+                if (bytes == null) {
+                  return AspectRatio(
+                    aspectRatio: aspectRatio,
+                    child: _buildOverlay(context, 'Đang chờ camera...'),
+                  );
+                }
+                return AspectRatio(
+                  aspectRatio: aspectRatio,
+                  child: _VideoCanvas(frame: bytes, quarterTurns: quarterTurns),
+                );
+              }),
             ),
           ],
         ),
@@ -81,16 +94,20 @@ class VideoStreamPanel extends StatelessWidget {
 }
 
 class _VideoCanvas extends StatelessWidget {
-  const _VideoCanvas({required this.frame});
+  const _VideoCanvas({required this.frame, required this.quarterTurns});
 
   final Uint8List frame;
+  final int quarterTurns;
 
   @override
   Widget build(BuildContext context) {
-    return Image.memory(
-      frame,
-      gaplessPlayback: true,
-      fit: BoxFit.cover,
+    return RotatedBox(
+      quarterTurns: quarterTurns,
+      child: Image.memory(
+        frame,
+        gaplessPlayback: true,
+        fit: BoxFit.cover,
+      ),
     );
   }
 }

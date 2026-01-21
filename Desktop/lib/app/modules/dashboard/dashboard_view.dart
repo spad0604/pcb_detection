@@ -31,8 +31,17 @@ class DashboardView extends GetView<DashboardController> {
                           children: [
                             VideoStreamPanel(controller: controller),
                             const SizedBox(height: 16),
-                            ComponentListPanel(controller: controller),
-                            const SizedBox(height: 16),
+                            Obx(() {
+                              final shouldShow = controller.showComponentList.value &&
+                                  controller.currentAnalysis != null;
+                              if (!shouldShow) return const SizedBox.shrink();
+                              return Column(
+                                children: [
+                                  ComponentListPanel(controller: controller),
+                                  const SizedBox(height: 16),
+                                ],
+                              );
+                            }),
                             ResultPanel(controller: controller),
                           ],
                         ),
@@ -55,14 +64,23 @@ class DashboardView extends GetView<DashboardController> {
                             const SizedBox(width: 24),
                             Expanded(
                               flex: 1,
-                              child: SingleChildScrollView(
-                                child: Column(
-                                  children: [
-                                    ComponentListPanel(controller: controller),
-                                    const SizedBox(height: 16),
-                                    ResultPanel(controller: controller),
-                                  ],
-                                ),
+                              child: Column(
+                                children: [
+                                  Obx(() {
+                                    final shouldShow = controller.showComponentList.value &&
+                                        controller.currentAnalysis != null;
+                                    if (!shouldShow) return const SizedBox.shrink();
+                                    return Column(
+                                      children: [
+                                        ComponentListPanel(controller: controller),
+                                        const SizedBox(height: 16),
+                                      ],
+                                    );
+                                  }),
+                                  Expanded(
+                                    child: ResultPanel(controller: controller),
+                                  ),
+                                ],
                               ),
                             ),
                           ],

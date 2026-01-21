@@ -27,6 +27,12 @@ class DashboardController extends GetxController {
   final Rxn<LineSnapshot> lastLineSnapshot = Rxn<LineSnapshot>();
   final liveEnabled = true.obs;
 
+  // UI: rotate live video stream (0/90/180/270 degrees)
+  final videoQuarterTurns = 0.obs;
+
+  // UI: show component checklist briefly after each new inference
+  final showComponentList = false.obs;
+
   // Control panel state
   final availablePorts = <String>[].obs;
   final selectedPort = '/dev/ttyACM0'.obs;
@@ -38,14 +44,29 @@ class DashboardController extends GetxController {
   Timer? _liveTimer;
   Timer? _analysisTimer;
   Timer? _statusTimer;
+  Timer? _componentListHideTimer;
   WebSocketChannel? _wsChannel;
   StreamSubscription? _wsSubscription;
   bool _liveWarningShown = false;
   bool _liveAnalysisWarningShown = false;
+  String? _lastInferenceDisplayKey;
+  int? _lastSnapshotCapturedAtMs;
+
+  static const Duration _componentListDisplayDuration = Duration(seconds: 8);
 
   @override
   void onInit() {
     super.onInit();
+
+    // Whenever we receive a new inference (manual upload or line snapshot),
+    // briefly show the component checklist then auto-hide.
+    ever<InferenceResult?>(lastInference, (result) {
+      if (result != null) _showComponentListTemporarily(result);
+    });
+    ever<InferenceResult?>(liveAnalysis, (result) {
+      if (result != null) _showComponentListTemporarily(result);
+    });
+
     _startWebSocketStream();
     refreshAvailablePorts();
     _fetchCameraInfo();
@@ -58,9 +79,25 @@ class DashboardController extends GetxController {
     _liveTimer?.cancel();
     _analysisTimer?.cancel();
     _statusTimer?.cancel();
+    _componentListHideTimer?.cancel();
     _wsSubscription?.cancel();
     _wsChannel?.sink.close();
     super.onClose();
+  }
+
+  InferenceResult? get currentAnalysis => liveAnalysis.value ?? lastInference.value;
+
+  void _showComponentListTemporarily(InferenceResult result) {
+    // Use a stable key to avoid re-showing on polling of the same result.
+    final key = result.annotatedImageUrl ?? result.timestamp.toIso8601String();
+    if (key == _lastInferenceDisplayKey) return;
+    _lastInferenceDisplayKey = key;
+
+    showComponentList.value = true;
+    _componentListHideTimer?.cancel();
+    _componentListHideTimer = Timer(_componentListDisplayDuration, () {
+      showComponentList.value = false;
+    });
   }
 
   void toggleLiveStream(bool enabled) {
@@ -71,6 +108,10 @@ class DashboardController extends GetxController {
       _stopWebSocketStream();
       _analysisTimer?.cancel();
     }
+  }
+
+  void rotateVideoClockwise() {
+    videoQuarterTurns.value = (videoQuarterTurns.value + 1) % 4;
   }
 
   Future<void> refreshLiveFrame() async {
@@ -176,6 +217,13 @@ class DashboardController extends GetxController {
       lastLineSnapshot.value = snapshot;
       if (snapshot.inference != null) {
         liveAnalysis.value = snapshot.inference;
+
+        // Trigger checklist visibility based on snapshot time (changes each new detection).
+        final capturedAtMs = snapshot.capturedAt?.millisecondsSinceEpoch;
+        if (capturedAtMs != null && capturedAtMs != _lastSnapshotCapturedAtMs) {
+          _lastSnapshotCapturedAtMs = capturedAtMs;
+          _showComponentListTemporarily(snapshot.inference!);
+        }
       }
     } catch (_) {
       // Silent fail để tránh spam log UI
@@ -336,8 +384,6 @@ class DashboardController extends GetxController {
   void _startLineStatusPolling() {
     _statusTimer?.cancel();
     _statusTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
-      if (!liveEnabled.value) return;
-      
       try {
         final status = await apiService.getLineStatus();
         lineStatus.value = status;
