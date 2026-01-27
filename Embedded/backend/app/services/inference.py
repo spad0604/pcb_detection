@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import json
 import os
 from datetime import datetime
@@ -167,6 +168,9 @@ class InferenceService:
                 self._normalize_label_key("tura"): "Tu ra",
                 self._normalize_label_key("tu ra"): "Tu ra",
                 self._normalize_label_key("capoutput"): "Tu ra",
+                self._normalize_label_key("dauta"): "Tu ra",
+                self._normalize_label_key("tudaura"): "Tu ra",
+                self._normalize_label_key("tu dau ra"): "Tu ra",
                 self._normalize_label_key("bientro"): "Bien tro",
                 self._normalize_label_key("bien tro"): "Bien tro",
                 self._normalize_label_key("potentiometer"): "Bien tro",
@@ -271,14 +275,14 @@ class InferenceService:
 
     async def analyze_image(self, img: np.ndarray) -> InferenceResponse:
         """API wrapper: Phân tích từ numpy array BGR (cho camera raw frame)."""
-        return self._analyze(img)
+        return await asyncio.to_thread(self._analyze, img)
 
     async def analyze_and_render(
         self, img: np.ndarray, upload_cloudinary: bool = False
     ) -> Tuple[InferenceResponse, Optional[bytes], Optional[str]]:
         """Chạy inference + render boxes (Cloudinary upload disabled for speed)."""
         result = await self.analyze_image(img)
-        annotated = self.draw_detection_boxes(img, result)
+        annotated = await asyncio.to_thread(self.draw_detection_boxes, img, result)
         annotated_bytes = annotated if annotated else None
         return result, annotated_bytes, None
 
@@ -424,6 +428,14 @@ class InferenceService:
         # Prefer YOLO class-based missing by default.
         if self._inference_mode != "template":
             detected_labels = {c.description for c in detected_components if c.description}
+
+            # Heuristic: Nếu model nhầm Tụ ra thành Tụ vào (detect >=2 Tụ vào, 0 Tụ ra) -> Coi như Đủ.
+            if "Tu vao" in detected_labels and "Tu ra" not in detected_labels:
+                input_count = sum(1 for c in detected_components if c.description == "Tu vao")
+                if input_count >= 2:
+                    logger.info(f"Heuristic Patch: Detected {input_count} Tu vao, 0 Tu ra -> Assume 1 Tu vao is Tu ra.")
+                    detected_labels.add("Tu ra")
+
             missing_labels_by_presence = [
                 label for label in self._expected_component_labels if label not in detected_labels
             ]
